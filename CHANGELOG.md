@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/joshlopes/minimalist-cost-tracker/compare/v1.2.0...v1.3.0) (2026-06-04)
+
+
+### Features
+
+* **dashboard:** refresh visuals, fix stale charts on empty profile ([#9](https://github.com/joshlopes/minimalist-cost-tracker/issues/9)) ([886a9f3](https://github.com/joshlopes/minimalist-cost-tracker/commit/886a9f3a71ae73c24cab9f79a441980218551f85))
+
 ## [1.2.0](https://github.com/joshlopes/minimalist-cost-tracker/compare/v1.1.0...v1.2.0) (2026-06-04)
 
 
