@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cost Tracker</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #181b22;
+      --panel-2: #20242e;
+      --text: #e6e8ec;
+      --muted: #98a0ad;
+      --accent: #6ea8fe;
+      --border: #2a2f3a;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f0f2f5;
+        --text: #1b1e24; --muted: #5b636f; --accent: #2f6fed; --border: #e2e5ea;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    header { padding: 20px 28px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 12px; }
+    header h1 { font-size: 18px; margin: 0; font-weight: 650; }
+    header .sub { color: var(--muted); font-size: 13px; }
+    nav { display: flex; gap: 4px; padding: 12px 28px 0; border-bottom: 1px solid var(--border); }
+    nav button {
+      background: none; border: none; color: var(--muted); padding: 10px 14px;
+      cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent;
+    }
+    nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+    main { padding: 24px 28px; max-width: 1100px; }
+    .tab { display: none; }
+    .tab.active { display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 24px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+    .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .card .value { font-size: 26px; font-weight: 650; margin-top: 6px; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 20px; }
+    .panel h2 { font-size: 14px; margin: 0 0 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; cursor: pointer; user-select: none; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.session-row { cursor: pointer; }
+    tr.session-row:hover { background: var(--panel-2); }
+    .detail td { background: var(--panel-2); font-size: 13px; color: var(--muted); }
+    .chip { display: inline-block; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; margin: 1px 2px; font-size: 12px; }
+    .empty { color: var(--muted); padding: 24px; text-align: center; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: -8px; margin-bottom: 14px; }
+    canvas { max-height: 320px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Cost Tracker</h1>
+    <span class="sub">Claude Code session telemetry — local only</span>
+  </header>
+  <nav id="tabs">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="sessions">Sessions</button>
+    <button data-tab="skills">Skills</button>
+    <button data-tab="models">Models</button>
+  </nav>
+  <main>
+    <section id="overview" class="tab active">
+      <div class="cards" id="stat-cards"></div>
+      <div class="panel">
+        <h2>Daily cost (last 30 days)</h2>
+        <canvas id="timeline-chart"></canvas>
+        <div class="empty" id="timeline-empty" hidden>No dated sessions yet.</div>
+      </div>
+    </section>
+
+    <section id="sessions" class="tab">
+      <div class="panel">
+        <h2>Sessions</h2>
+        <p class="hint">Click a row to see its skill and tool breakdown.</p>
+        <table id="sessions-table">
+          <thead>
+            <tr>
+              <th data-sort="date">When</th>
+              <th>Working dir</th>
+              <th>Model</th>
+              <th class="num" data-sort="cost">Cost (USD)</th>
+              <th>Skills</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="empty" id="sessions-empty" hidden>No sessions recorded yet.</div>
+      </div>
+    </section>
+
+    <section id="skills" class="tab">
+      <div class="panel">
+        <h2>Cost attributed by skill</h2>
+        <p class="hint">Whole-session cost is attributed to every skill used in that session (an approximation).</p>
+        <canvas id="skills-chart"></canvas>
+        <div class="empty" id="skills-empty" hidden>No skill events recorded yet.</div>
+      </div>
+      <div class="panel">
+        <h2>Skill detail</h2>
+        <table id="skills-table">
+          <thead>
+            <tr>
+              <th>Skill</th>
+              <th class="num">Uses</th>
+              <th class="num">Sessions</th>
+              <th class="num">Avg session cost</th>
+              <th class="num">Total cost</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="models" class="tab">
+      <div class="panel">
+        <h2>Cost share by model family</h2>
+        <canvas id="models-chart"></canvas>
+        <div class="empty" id="models-empty" hidden>No sessions recorded yet.</div>
+      </div>
+      <div class="panel">
+        <h2>Model detail</h2>
+        <table id="models-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Sessions</th>
+              <th class="num">Input tokens</th>
+              <th class="num">Output tokens</th>
+              <th class="num">Total cost</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

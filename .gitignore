@@ -11,3 +11,13 @@ dist/
 build/
 .env
 .env.local
+
+# Go
+/bin/
+*.test
+*.out
+
+# Local SQLite databases
+*.db
+*.db-wal
+*.db-shm
