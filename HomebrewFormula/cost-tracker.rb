@@ -15,27 +15,27 @@
 class CostTracker < Formula
   desc "Track Claude Code session token usage and cost in a local dashboard"
   homepage "https://github.com/joshlopes/minimalist-cost-tracker"
-  version "1.1.0" # bumped per release
+  version "1.2.0" # bumped per release
 
   on_macos do
     on_arm do
       url "https://github.com/joshlopes/minimalist-cost-tracker/releases/download/v#{version}/cost-tracker_darwin_arm64.tar.gz"
-      sha256 "e2a66f64ae522983ec5adec3205d70816407c3d8ee11565c1b9349524c6cda4d"
+      sha256 "f1479aa6363bcce4e5c937f7882b90a0b9ff70617f7a8e14eca48c5c1941cd38"
     end
     on_intel do
       url "https://github.com/joshlopes/minimalist-cost-tracker/releases/download/v#{version}/cost-tracker_darwin_amd64.tar.gz"
-      sha256 "a7a315fde9faa3e45a8dff65b1c60986e5f62fb19095bd7d8431d9f20a2d7abc"
+      sha256 "81334d66ced44f6415aefac9438fac7608431f16eb13a68d8b06ed864d69602b"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/joshlopes/minimalist-cost-tracker/releases/download/v#{version}/cost-tracker_linux_arm64.tar.gz"
-      sha256 "226eb0271fcfc5a9a78fcc38e0dbf77d871e291fd507d8205b7a1d13a25592c1"
+      sha256 "56184aa4828cfaba25c26d9601f10030c7c419b226fa1129046017790bcc73e3"
     end
     on_intel do
       url "https://github.com/joshlopes/minimalist-cost-tracker/releases/download/v#{version}/cost-tracker_linux_amd64.tar.gz"
-      sha256 "a94c83d903159ec5999ccaf41e2714c91f31bbc0de242c86e372f17ffb5464e0"
+      sha256 "e5e315d9e69216c600100ed0beb8947d51f94bde2402daa5215d9c93add34c77"
     end
   end
 
