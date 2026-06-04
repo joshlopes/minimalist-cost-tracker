@@ -3,8 +3,18 @@ name: release
 # Semver releases are driven by release-please. Every push to main updates a
 # standing "release PR" that bumps the version and CHANGELOG from the
 # conventional-commit history (fix -> patch, feat -> minor, feat!/BREAKING ->
-# major). Merging that PR creates the vX.Y.Z tag + GitHub Release; the build
-# job below then attaches the prebuilt binaries and bumps the Homebrew formula.
+# major). Merging that PR creates a *draft* GitHub Release; the build job below
+# then attaches the prebuilt binaries and only then publishes the release.
+#
+# The release is created as a draft on purpose. release-please publishes the
+# Release the instant the PR merges, but the binaries are built and attached by
+# the separate, later `build` job. If the release were published immediately,
+# `releases/latest` would point at an asset-less release for the duration of the
+# build, and `install.sh` (which resolves "latest" then downloads the tarball)
+# would 404 for anyone installing inside that window. A draft is not returned by
+# `releases/latest` and its assets are not downloadable, so the release only
+# becomes visible once the binaries are in place. Publishing also creates the
+# vX.Y.Z tag, so the tag never exists without its assets.
 #
 # The build is folded into this workflow on purpose: a tag created with the
 # default GITHUB_TOKEN does NOT trigger a separate `push: tags` workflow, so a
@@ -74,6 +84,16 @@ jobs:
         run: |
           gh release upload "${{ needs.release-please.outputs.tag_name }}" \
             dist/cost-tracker_*.tar.gz dist/SHA256SUMS --clobber
+
+      # Flip the draft to published only after every asset is attached. This is
+      # the step that makes the release visible to `releases/latest` and creates
+      # the vX.Y.Z tag, so "latest" can never resolve to an asset-less release.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "${{ needs.release-please.outputs.tag_name }}" \
+            --draft=false --latest
 
       - name: Bump Homebrew formula
         env:
