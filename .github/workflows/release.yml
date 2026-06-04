@@ -97,6 +97,8 @@ jobs:
           if git diff --cached --quiet; then
             echo "formula already up to date"
           else
+            # chore(release) commits are ignored by release-please, so this push
+            # won't trigger another version bump.
             git commit -m "chore(release): update Homebrew formula to ${TAG}"
-            git push
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
