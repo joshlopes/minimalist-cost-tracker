@@ -27,7 +27,7 @@ func setup(t *testing.T) http.Handler {
 	}
 	t.Cleanup(func() { d.Close() })
 
-	rec := recorder.New(d)
+	rec := recorder.New(d, "default")
 	pricer := pricing.New()
 	// Seed: one finalised sonnet session that used the "pr" skill.
 	for _, p := range []string{

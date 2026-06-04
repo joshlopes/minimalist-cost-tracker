@@ -35,11 +35,11 @@ func feed(t *testing.T, rec *recorder.Recorder, payload string) {
 
 func TestPostToolUseSkillRecordsEvents(t *testing.T) {
 	d := newTestDB(t)
-	rec := recorder.New(d)
+	rec := recorder.New(d, "default")
 
 	feed(t, rec, `{"hook_event_name":"PostToolUse","session_id":"s1","cwd":"/tmp/proj","tool_name":"Skill","tool_use_id":"tu1","tool_input":{"skill":"pr"}}`)
 
-	skills, err := d.Skills()
+	skills, err := d.Skills("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,11 +62,11 @@ func TestPostToolUseSkillRecordsEvents(t *testing.T) {
 
 func TestPostToolUseNonSkillRecordsToolOnly(t *testing.T) {
 	d := newTestDB(t)
-	rec := recorder.New(d)
+	rec := recorder.New(d, "default")
 
 	feed(t, rec, `{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Bash","tool_use_id":"tu2","tool_input":{"command":"ls"}}`)
 
-	skills, _ := d.Skills()
+	skills, _ := d.Skills("")
 	if len(skills) != 0 {
 		t.Errorf("expected no skill events, got %+v", skills)
 	}
@@ -78,7 +78,7 @@ func TestPostToolUseNonSkillRecordsToolOnly(t *testing.T) {
 
 func TestPartialSessionPreservedWithoutStop(t *testing.T) {
 	d := newTestDB(t)
-	rec := recorder.New(d)
+	rec := recorder.New(d, "default")
 
 	feed(t, rec, `{"hook_event_name":"PostToolUse","session_id":"partial","tool_name":"Skill","tool_input":{"skill":"reflect"}}`)
 
@@ -96,7 +96,7 @@ func TestPartialSessionPreservedWithoutStop(t *testing.T) {
 
 func TestStopFinalisesSession(t *testing.T) {
 	d := newTestDB(t)
-	rec := recorder.New(d)
+	rec := recorder.New(d, "default")
 
 	transcriptPath := filepath.Join(t.TempDir(), "t.jsonl")
 	body := `{"type":"assistant","timestamp":"2026-06-04T10:00:05Z","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":1000,"output_tokens":500}}}` + "\n"
@@ -127,7 +127,7 @@ func TestStopFinalisesSession(t *testing.T) {
 
 func TestHandleGarbageNeverErrors(t *testing.T) {
 	d := newTestDB(t)
-	rec := recorder.New(d)
+	rec := recorder.New(d, "default")
 	// Malformed JSON, empty input, missing session id — all must be swallowed.
 	for _, p := range []string{``, `not json`, `{}`, `{"hook_event_name":"PostToolUse"}`} {
 		if err := hook.Handle(strings.NewReader(p), rec, pricing.New()); err != nil {

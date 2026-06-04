@@ -10,21 +10,28 @@ import (
 )
 
 type Recorder struct {
-	db *db.DB
+	db      *db.DB
+	profile string
 }
 
-func New(database *db.DB) *Recorder {
-	return &Recorder{db: database}
+// New builds a recorder that attributes every session it creates to profile
+// (the Claude Code config the hook was installed under). An empty profile
+// defaults to "default".
+func New(database *db.DB, profile string) *Recorder {
+	if profile == "" {
+		profile = "default"
+	}
+	return &Recorder{db: database, profile: profile}
 }
 
 // EnsureSession inserts the session if it does not already exist, stamping a
-// started_at so partial (never-finalised) sessions still carry a timestamp.
-// Existing rows are left untouched.
+// started_at so partial (never-finalised) sessions still carry a timestamp, and
+// recording the recorder's profile. Existing rows are left untouched.
 func (r *Recorder) EnsureSession(sessionID, cwd string) error {
 	_, err := r.db.Exec(
-		`INSERT OR IGNORE INTO sessions (id, cwd, started_at)
-		 VALUES (?, ?, datetime('now'))`,
-		sessionID, cwd,
+		`INSERT OR IGNORE INTO sessions (id, cwd, profile, started_at)
+		 VALUES (?, ?, ?, datetime('now'))`,
+		sessionID, cwd, r.profile,
 	)
 	return err
 }

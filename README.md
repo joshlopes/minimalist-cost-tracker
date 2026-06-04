@@ -85,10 +85,11 @@ The dashboard has four tabs:
 ## Commands
 
 ```
-cost-tracker hook                 read a hook event from stdin and record it
+cost-tracker hook [--profile P]   read a hook event from stdin and record it
 cost-tracker serve [--port N]     start the dashboard (default 7842)
 cost-tracker migrate              create/upgrade the database schema
-cost-tracker install-hooks        wire the hooks into Claude Code settings.json
+cost-tracker install-hooks [--all] wire the hooks into Claude Code settings.json
+                                  (--all = every profile; --settings P = a specific one)
 cost-tracker service install      install + start the login service (--port N)
 cost-tracker service uninstall    stop and remove the login service
 cost-tracker service status       show the login-service status
@@ -120,6 +121,60 @@ $EDITOR ~/.claude/settings.json
 rm -f ~/.local/bin/cost-tracker
 rm -rf ~/.local/share/cost-tracker
 ```
+
+## FAQ
+
+### Where does it install the hooks?
+
+Into a Claude Code `settings.json`, under the `hooks.PostToolUse` and `hooks.Stop`
+keys. By default a single location is chosen, in this order:
+
+1. `$CLAUDE_CONFIG_DIR/settings.json`, if that variable is set;
+2. otherwise the first existing of `~/.claude` then `~/.claude-work`;
+3. otherwise `~/.claude/settings.json` (created if missing).
+
+So if you have both `~/.claude` and `~/.claude-work`, a plain install lands in
+`~/.claude` — the first match. Check where it went with:
+
+```sh
+grep -l 'cost-tracker hook' ~/.claude/settings.json ~/.claude-work/settings.json 2>/dev/null
+```
+
+### I run more than one Claude (e.g. personal + work). How do I track both?
+
+Wire the hooks into **every** profile:
+
+```sh
+cost-tracker install-hooks --all      # ~/.claude and ~/.claude-work
+```
+
+or target one explicitly:
+
+```sh
+cost-tracker install-hooks --settings ~/.claude-work/settings.json
+```
+
+Each profile gets a distinct hook command — the default profile keeps the bare
+`cost-tracker hook` (so existing installs aren't disturbed), and named profiles
+get `cost-tracker hook --profile <name>`. The profile label is derived from the
+config directory: `~/.claude` → `default`, `~/.claude-work` → `work`,
+`~/.claude-<x>` → `<x>`. Re-running is idempotent and safe.
+
+### Can I see costs per profile?
+
+Yes. Every session is stamped with the profile that recorded it. When more than
+one profile has data, the dashboard shows a **Profile** selector in the header
+that filters every tab; the Sessions table also gains a Profile column. The same
+filter is available on the API via `?profile=<name>` (e.g.
+`/api/stats?profile=work`), and `/api/profiles` lists the known profiles.
+
+### Will adding profiles double-count or duplicate hooks?
+
+No. Hooks are de-duplicated by exact command string, so re-running `install-hooks`
+(with or without `--all`) never adds a second copy. An upgrade from an
+older single-profile install keeps working unchanged — its bare `cost-tracker
+hook` command is recognised as the `default` profile. Existing databases are
+migrated automatically (the `profile` column back-fills to `default`).
 
 ## Development
 

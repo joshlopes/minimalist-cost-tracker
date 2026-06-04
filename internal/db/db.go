@@ -38,12 +38,58 @@ func Open(path string) (*DB, error) {
 }
 
 // Migrate executes the embedded schema. It is idempotent (every statement is
-// CREATE ... IF NOT EXISTS), so it is safe to run on every startup.
+// CREATE ... IF NOT EXISTS), so it is safe to run on every startup. Column
+// additions to existing tables are applied separately via ensureColumn, since
+// SQLite has no ADD COLUMN IF NOT EXISTS.
 func (d *DB) Migrate() error {
 	if _, err := d.Exec(schemaSQL); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	// profile was added after the first release; back-fill it on older DBs
+	// before indexing it (the index would fail on a DB that lacks the column).
+	if err := d.ensureColumn("sessions", "profile", "TEXT NOT NULL DEFAULT 'default'"); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	if _, err := d.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_profile ON sessions(profile)`); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
 	return nil
+}
+
+// ensureColumn adds column to table when it is not already present, so schema
+// additions reach databases created before the column existed. SQLite lacks
+// ADD COLUMN IF NOT EXISTS, so we probe PRAGMA table_info first.
+func (d *DB) ensureColumn(table, column, ddl string) error {
+	rows, err := d.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var (
+			cid         int
+			name, ctype string
+			notnull, pk int
+			dflt        sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if found {
+		return nil
+	}
+	_, err = d.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, ddl))
+	return err
 }
 
 // ---- read models (JSON-tagged so the web layer can marshal them directly) ----
@@ -59,6 +105,7 @@ type StatsRow struct {
 type SessionRow struct {
 	ID               string   `json:"id"`
 	Cwd              string   `json:"cwd"`
+	Profile          string   `json:"profile"`
 	Model            string   `json:"model"`
 	StartedAt        *string  `json:"started_at"`
 	EndedAt          *string  `json:"ended_at"`
@@ -104,16 +151,59 @@ type DayBucketRow struct {
 	Sessions int     `json:"sessions"`
 }
 
-// Stats returns aggregate totals across all sessions.
-func (d *DB) Stats() (StatsRow, error) {
+// profileFilter returns a SQL predicate and args restricting rows to a single
+// profile, or an empty clause when profile is "" (meaning all profiles). alias
+// is the sessions-table alias used by the query ("" when the table is
+// unaliased).
+func profileFilter(profile, alias string) (string, []any) {
+	if profile == "" {
+		return "", nil
+	}
+	col := "profile"
+	if alias != "" {
+		col = alias + ".profile"
+	}
+	return col + " = ?", []any{profile}
+}
+
+// Profiles returns the distinct profile labels that have recorded sessions, so
+// the dashboard can offer a per-profile filter.
+func (d *DB) Profiles() ([]string, error) {
+	rows, err := d.Query(`
+		SELECT DISTINCT profile FROM sessions
+		WHERE profile IS NOT NULL AND profile <> ''
+		ORDER BY profile`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// Stats returns aggregate totals across sessions, optionally scoped to a single
+// profile (empty profile = all profiles).
+func (d *DB) Stats(profile string) (StatsRow, error) {
 	var s StatsRow
-	row := d.QueryRow(`
+	where, args := profileFilter(profile, "")
+	q := `
 		SELECT
 			COALESCE(SUM(cost_usd), 0),
 			COUNT(*),
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0)
-		FROM sessions`)
+		FROM sessions`
+	if where != "" {
+		q += " WHERE " + where
+	}
+	row := d.QueryRow(q, args...)
 	if err := row.Scan(&s.TotalCostUSD, &s.TotalSessions, &s.TotalInputTokens, &s.TotalOutputTokens); err != nil {
 		return s, err
 	}
@@ -136,24 +226,31 @@ func sessionSortClause(sortBy string) string {
 	}
 }
 
-// Sessions returns a page of sessions with their distinct skill names.
-func (d *DB) Sessions(limit, offset int, sortBy string) ([]SessionRow, error) {
+// Sessions returns a page of sessions with their distinct skill names,
+// optionally scoped to a single profile (empty profile = all profiles).
+func (d *DB) Sessions(limit, offset int, sortBy, profile string) ([]SessionRow, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	if offset < 0 {
 		offset = 0
 	}
+	where, args := profileFilter(profile, "s")
+	if where != "" {
+		where = "WHERE " + where
+	}
 	q := fmt.Sprintf(`
-		SELECT s.id, s.cwd, s.model, s.started_at, s.ended_at,
+		SELECT s.id, s.cwd, s.profile, s.model, s.started_at, s.ended_at,
 		       s.input_tokens, s.output_tokens, s.cache_read_tokens,
 		       s.cache_write_tokens, s.cost_usd,
 		       (SELECT GROUP_CONCAT(DISTINCT skill_name)
 		          FROM skill_events WHERE session_id = s.id) AS skills
 		FROM sessions s
+		%s
 		ORDER BY %s
-		LIMIT ? OFFSET ?`, sessionSortClause(sortBy))
-	rows, err := d.Query(q, limit, offset)
+		LIMIT ? OFFSET ?`, where, sessionSortClause(sortBy))
+	args = append(args, limit, offset)
+	rows, err := d.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -174,19 +271,21 @@ func (d *DB) Sessions(limit, offset int, sortBy string) ([]SessionRow, error) {
 // column) shared by Sessions and SessionByID.
 func scanSessionRow(rows *sql.Rows) (SessionRow, error) {
 	var (
-		r      SessionRow
-		cwd    sql.NullString
-		model  sql.NullString
-		start  sql.NullString
-		end    sql.NullString
-		skills sql.NullString
+		r       SessionRow
+		cwd     sql.NullString
+		profile sql.NullString
+		model   sql.NullString
+		start   sql.NullString
+		end     sql.NullString
+		skills  sql.NullString
 	)
-	if err := rows.Scan(&r.ID, &cwd, &model, &start, &end,
+	if err := rows.Scan(&r.ID, &cwd, &profile, &model, &start, &end,
 		&r.InputTokens, &r.OutputTokens, &r.CacheReadTokens,
 		&r.CacheWriteTokens, &r.CostUSD, &skills); err != nil {
 		return r, err
 	}
 	r.Cwd = cwd.String
+	r.Profile = profile.String
 	r.Model = model.String
 	r.StartedAt = nullToPtr(start)
 	r.EndedAt = nullToPtr(end)
@@ -198,7 +297,7 @@ func scanSessionRow(rows *sql.Rows) (SessionRow, error) {
 func (d *DB) SessionByID(id string) (SessionDetail, error) {
 	var detail SessionDetail
 	rows, err := d.Query(`
-		SELECT s.id, s.cwd, s.model, s.started_at, s.ended_at,
+		SELECT s.id, s.cwd, s.profile, s.model, s.started_at, s.ended_at,
 		       s.input_tokens, s.output_tokens, s.cache_read_tokens,
 		       s.cache_write_tokens, s.cost_usd,
 		       (SELECT GROUP_CONCAT(DISTINCT skill_name)
@@ -258,8 +357,12 @@ func (d *DB) events(query, id string) ([]EventRow, error) {
 // that appeared in that session (the session-level approximation documented in
 // the spec). Cost is summed over distinct sessions, not raw events, so a skill
 // used twice in one session does not double-count that session's cost.
-func (d *DB) Skills() ([]SkillStatRow, error) {
-	rows, err := d.Query(`
+func (d *DB) Skills(profile string) ([]SkillStatRow, error) {
+	where, args := profileFilter(profile, "s")
+	if where != "" {
+		where = "WHERE " + where
+	}
+	rows, err := d.Query(fmt.Sprintf(`
 		SELECT skill_name,
 		       SUM(uses)        AS usage_count,
 		       COUNT(*)         AS session_count,
@@ -271,10 +374,11 @@ func (d *DB) Skills() ([]SkillStatRow, error) {
 			       s.cost_usd AS cost_usd
 			FROM skill_events se
 			JOIN sessions s ON s.id = se.session_id
+			%s
 			GROUP BY se.skill_name, se.session_id
 		)
 		GROUP BY skill_name
-		ORDER BY total_cost DESC, usage_count DESC`)
+		ORDER BY total_cost DESC, usage_count DESC`, where), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -292,16 +396,21 @@ func (d *DB) Skills() ([]SkillStatRow, error) {
 
 // Models aggregates per raw model string. Family normalisation (for the
 // breakdown chart) is applied by the web layer, which holds the pricer.
-func (d *DB) Models() ([]ModelStatRow, error) {
-	rows, err := d.Query(`
+func (d *DB) Models(profile string) ([]ModelStatRow, error) {
+	where, args := profileFilter(profile, "")
+	if where != "" {
+		where = "WHERE " + where
+	}
+	rows, err := d.Query(fmt.Sprintf(`
 		SELECT COALESCE(NULLIF(model, ''), 'unknown') AS model,
 		       COUNT(*)                       AS session_count,
 		       COALESCE(SUM(cost_usd), 0)     AS total_cost,
 		       COALESCE(SUM(input_tokens), 0) AS total_input,
 		       COALESCE(SUM(output_tokens), 0) AS total_output
 		FROM sessions
+		%s
 		GROUP BY model
-		ORDER BY total_cost DESC`)
+		ORDER BY total_cost DESC`, where), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -317,21 +426,27 @@ func (d *DB) Models() ([]ModelStatRow, error) {
 	return out, rows.Err()
 }
 
-// Timeline returns daily cost buckets for the trailing window of days.
-func (d *DB) Timeline(days int) ([]DayBucketRow, error) {
+// Timeline returns daily cost buckets for the trailing window of days,
+// optionally scoped to a single profile (empty profile = all profiles).
+func (d *DB) Timeline(days int, profile string) ([]DayBucketRow, error) {
 	if days <= 0 {
 		days = 30
 	}
 	modifier := fmt.Sprintf("-%d days", days)
-	rows, err := d.Query(`
+	where, args := profileFilter(profile, "")
+	if where != "" {
+		where = " AND " + where
+	}
+	args = append([]any{modifier}, args...)
+	rows, err := d.Query(fmt.Sprintf(`
 		SELECT date(COALESCE(ended_at, started_at)) AS day,
 		       COALESCE(SUM(cost_usd), 0)           AS cost,
 		       COUNT(*)                             AS sessions
 		FROM sessions
 		WHERE COALESCE(ended_at, started_at) IS NOT NULL
-		  AND date(COALESCE(ended_at, started_at)) >= date('now', ?)
+		  AND date(COALESCE(ended_at, started_at)) >= date('now', ?)%s
 		GROUP BY day
-		ORDER BY day`, modifier)
+		ORDER BY day`, where), args...)
 	if err != nil {
 		return nil, err
 	}
