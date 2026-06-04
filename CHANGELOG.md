@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/joshlopes/minimalist-cost-tracker/compare/v1.0.0...v1.1.0) (2026-06-04)
+
+
+### Features
+
+* **install-hooks:** multi-profile support with --all and --settings flags ([#6](https://github.com/joshlopes/minimalist-cost-tracker/issues/6)) ([a5e0f6b](https://github.com/joshlopes/minimalist-cost-tracker/commit/a5e0f6b1409db2df5644d26e765a045aa28ae3ad))
+
+
+### Bug Fixes
+
+* **release:** publish GitHub release only after binaries are attached ([#4](https://github.com/joshlopes/minimalist-cost-tracker/issues/4)) ([1565776](https://github.com/joshlopes/minimalist-cost-tracker/commit/1565776c60787f68339f4c3c82d14dad32b00ed2))
+
 ## 1.0.0 (2026-06-04)
 
 
