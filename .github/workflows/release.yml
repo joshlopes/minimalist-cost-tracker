@@ -1,18 +1,38 @@
 name: release
 
-# Publishes prebuilt binaries when a vX.Y.Z tag is pushed. modernc.org/sqlite
-# is pure Go, so every target cross-compiles with CGO_ENABLED=0 from one
-# runner — no per-OS matrix runners needed.
+# Semver releases are driven by release-please. Every push to main updates a
+# standing "release PR" that bumps the version and CHANGELOG from the
+# conventional-commit history (fix -> patch, feat -> minor, feat!/BREAKING ->
+# major). Merging that PR creates the vX.Y.Z tag + GitHub Release; the build
+# job below then attaches the prebuilt binaries and bumps the Homebrew formula.
+#
+# The build is folded into this workflow on purpose: a tag created with the
+# default GITHUB_TOKEN does NOT trigger a separate `push: tags` workflow, so a
+# standalone tag-triggered release would never fire.
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
-  release:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +48,7 @@ jobs:
 
       - name: Build release artifacts
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ needs.release-please.outputs.tag_name }}
           CGO_ENABLED: "0"
         run: |
           set -eu
@@ -48,11 +68,37 @@ jobs:
           sha256sum cost-tracker_*.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Publish release
+      - name: Attach assets to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            dist/cost-tracker_*.tar.gz dist/SHA256SUMS \
-            --title "${{ github.ref_name }}" \
-            --generate-notes
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" \
+            dist/cost-tracker_*.tar.gz dist/SHA256SUMS --clobber
+
+      - name: Bump Homebrew formula
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -eu
+          formula="HomebrewFormula/cost-tracker.rb"
+          version="${TAG#v}"
+          # version line
+          perl -0pi -e "s/^  version \"[^\"]*\"/  version \"${version}\"/m" "$formula"
+          # per-platform sha256: anchor on the tarball name, replace the value
+          # on the following sha256 line (handles both the REPLACE_WITH_*
+          # placeholders and a previously-released real checksum).
+          for plat in darwin_arm64 darwin_amd64 linux_arm64 linux_amd64; do
+            sha="$(awk -v f="cost-tracker_${plat}.tar.gz" '$2==f {print $1}' dist/SHA256SUMS)"
+            perl -0pi -e "s{(cost-tracker_${plat}\\.tar\\.gz\"\\n\\s*sha256 \")[^\"]*}{\${1}${sha}}" "$formula"
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$formula"
+          if git diff --cached --quiet; then
+            echo "formula already up to date"
+          else
+            # chore(release) commits are ignored by release-please, so this push
+            # won't trigger another version bump.
+            git commit -m "chore(release): update Homebrew formula to ${TAG}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi

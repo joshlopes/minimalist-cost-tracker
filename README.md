@@ -133,19 +133,27 @@ make dist    # cross-compiled release tarballs + SHA256SUMS in ./dist
 
 ## Releasing
 
-Releases are built by `.github/workflows/release.yml` when a `vX.Y.Z` tag is
-pushed:
+Releases are automated with [release-please](https://github.com/googleapis/release-please)
+and driven by the conventional-commit history — no manual tagging. The version
+bump follows semver: `fix:` → patch, `feat:` → minor, `feat!:` / `BREAKING
+CHANGE:` → major.
 
-```sh
-git tag v1.2.3
-git push origin v1.2.3
-```
+1. Land commits on `main` using conventional-commit messages.
+2. release-please keeps a standing **"chore(main): release X.Y.Z"** PR open,
+   maintaining the next version and `CHANGELOG.md` from those commits.
+3. **Merging that PR is the approval step** — it creates the `vX.Y.Z` tag and a
+   GitHub Release.
 
-The workflow cross-compiles `darwin/{amd64,arm64}` and `linux/{amd64,arm64}`
-(pure-Go SQLite means `CGO_ENABLED=0`, so one runner does all targets), writes
-`SHA256SUMS`, and publishes a GitHub Release. `install.sh` and `cost-tracker
-update` consume those assets. The Homebrew formula in `HomebrewFormula/` is
-bumped per release (version + the four per-platform `sha256` values).
+The same `.github/workflows/release.yml` then runs its `build` job, which
+cross-compiles `darwin/{amd64,arm64}` and `linux/{amd64,arm64}` (pure-Go SQLite
+means `CGO_ENABLED=0`, so one runner does all targets), writes `SHA256SUMS`,
+attaches the tarballs to the release, and commits the bumped Homebrew formula
+(version + the four per-platform `sha256` values). `install.sh` and
+`cost-tracker update` consume those assets.
+
+> The build is folded into the release-please workflow on purpose: a tag created
+> with the default `GITHUB_TOKEN` does not trigger a separate `push: tags`
+> workflow. To force a specific version, add `Release-As: 1.2.3` to a commit body.
 
 ## Notes / limitations
 
