@@ -21,7 +21,7 @@ func newRecorder(t *testing.T) (*Recorder, *db.DB) {
 	if err := d.Migrate(); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	return New(d), d
+	return New(d, "default"), d
 }
 
 func TestEnsureSessionIdempotent(t *testing.T) {
@@ -56,6 +56,40 @@ func TestEnsureSessionIdempotent(t *testing.T) {
 	}
 	if start != firstStart {
 		t.Errorf("started_at changed from %q to %q", firstStart, start)
+	}
+}
+
+func TestEnsureSessionRecordsProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rec.db")
+	d, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	if err := New(d, "work").EnsureSession("s1", "/work"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+	var profile string
+	if err := d.QueryRow(`SELECT profile FROM sessions WHERE id = ?`, "s1").Scan(&profile); err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	if profile != "work" {
+		t.Errorf("profile = %q, want work", profile)
+	}
+
+	// An empty profile falls back to "default".
+	if err := New(d, "").EnsureSession("s2", "/x"); err != nil {
+		t.Fatalf("EnsureSession default: %v", err)
+	}
+	if err := d.QueryRow(`SELECT profile FROM sessions WHERE id = ?`, "s2").Scan(&profile); err != nil {
+		t.Fatalf("read profile s2: %v", err)
+	}
+	if profile != "default" {
+		t.Errorf("empty profile = %q, want default", profile)
 	}
 }
 
@@ -117,7 +151,7 @@ func TestFinaliseSession(t *testing.T) {
 		t.Fatalf("FinaliseSession: %v", err)
 	}
 
-	row, err := d.Sessions(10, 0, "cost")
+	row, err := d.Sessions(10, 0, "cost", "")
 	if err != nil {
 		t.Fatalf("Sessions: %v", err)
 	}
@@ -153,7 +187,7 @@ func TestUnfinalisedSessionVisible(t *testing.T) {
 		t.Fatalf("InsertSkillEvent: %v", err)
 	}
 
-	rows, err := d.Sessions(10, 0, "date")
+	rows, err := d.Sessions(10, 0, "date", "")
 	if err != nil {
 		t.Fatalf("Sessions: %v", err)
 	}

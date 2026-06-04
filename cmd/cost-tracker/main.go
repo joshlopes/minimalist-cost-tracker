@@ -35,7 +35,8 @@ Usage:
   cost-tracker hook                 read a hook event from stdin and record it
   cost-tracker serve [--port N]     start the dashboard (default port 7842)
   cost-tracker migrate              create/upgrade the database schema
-  cost-tracker install-hooks        wire the hooks into Claude Code settings.json
+  cost-tracker install-hooks [--all] wire the hooks into Claude Code settings.json
+                                    (--all targets every profile: ~/.claude and ~/.claude-work)
   cost-tracker service <cmd>        install|uninstall|status the login service
   cost-tracker update [--repo R]    self-update to the latest GitHub release
   cost-tracker version              print version
@@ -49,7 +50,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "hook":
-		runHook()
+		runHook(os.Args[2:])
 	case "serve":
 		runServe(os.Args[2:])
 	case "migrate":
@@ -120,8 +121,14 @@ func selfPath() string {
 }
 
 // runHook records one event from stdin. It logs to hook.log and always exits 0
-// so a tracker failure never breaks a Claude Code session.
-func runHook() {
+// so a tracker failure never breaks a Claude Code session. --profile names the
+// Claude Code config the hook was installed under (default "default"), so the
+// dashboard can report per-profile.
+func runHook(args []string) {
+	fs := flag.NewFlagSet("hook", flag.ExitOnError)
+	profile := fs.String("profile", "default", "profile label to attribute this session to")
+	_ = fs.Parse(args)
+
 	if dir, err := dataDir(); err == nil {
 		if f, err := os.OpenFile(filepath.Join(dir, "hook.log"),
 			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
@@ -137,7 +144,7 @@ func runHook() {
 	}
 	defer database.Close()
 
-	rec := recorder.New(database)
+	rec := recorder.New(database, *profile)
 	_ = hook.Handle(os.Stdin, rec, pricing.New())
 	os.Exit(0)
 }
@@ -180,27 +187,49 @@ func runMigrate() {
 
 func runInstallHooks(args []string) {
 	fs := flag.NewFlagSet("install-hooks", flag.ExitOnError)
-	settingsPath := fs.String("settings", "", "path to Claude Code settings.json (auto-detected if empty)")
+	settingsPath := fs.String("settings", "", "path to a specific Claude Code settings.json (profile inferred from its dir)")
+	all := fs.Bool("all", false, "wire hooks into every detected profile (~/.claude and ~/.claude-work)")
 	_ = fs.Parse(args)
 
-	path := *settingsPath
-	if path == "" {
-		p, err := settings.Path()
-		if err != nil {
-			log.Fatalf("install-hooks: locate settings: %v", err)
-		}
-		path = p
-	}
-
-	added, err := settings.InstallHooks(path, selfPath())
+	profiles, err := installTargets(*settingsPath, *all)
 	if err != nil {
 		log.Fatalf("install-hooks: %v", err)
 	}
-	if len(added) == 0 {
-		fmt.Printf("hooks already present in %s\n", path)
-		return
+
+	for _, p := range profiles {
+		added, err := settings.InstallHooks(p.Path, selfPath(), p.Name)
+		if err != nil {
+			log.Fatalf("install-hooks: %v", err)
+		}
+		if len(added) == 0 {
+			fmt.Printf("[%s] hooks already present in %s\n", p.Name, p.Path)
+		} else {
+			fmt.Printf("[%s] wired hooks (%v) into %s\n", p.Name, added, p.Path)
+		}
 	}
-	fmt.Printf("wired hooks (%v) into %s\n", added, path)
+}
+
+// installTargets resolves which profile(s) install-hooks should write to:
+// an explicit --settings path wins, then --all (every detected profile), then
+// the single auto-detected default.
+func installTargets(settingsPath string, all bool) ([]settings.Profile, error) {
+	switch {
+	case settingsPath != "":
+		dir := filepath.Dir(settingsPath)
+		return []settings.Profile{{
+			Name: settings.ProfileName(dir),
+			Dir:  dir,
+			Path: settingsPath,
+		}}, nil
+	case all:
+		return settings.AllProfiles()
+	default:
+		p, err := settings.DefaultProfile()
+		if err != nil {
+			return nil, err
+		}
+		return []settings.Profile{p}, nil
+	}
 }
 
 func runService(args []string) {

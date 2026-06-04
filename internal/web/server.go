@@ -43,6 +43,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", fileServer))
 
 	mux.HandleFunc("GET /", s.handleIndex)
+	mux.HandleFunc("GET /api/profiles", s.handleProfiles)
 	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleSessionByID)
@@ -73,8 +74,22 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(page)
 }
 
+// handleProfiles lists the profiles that have recorded sessions, so the
+// dashboard can offer a per-profile filter.
+func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
+	profiles, err := s.db.Profiles()
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if profiles == nil {
+		profiles = []string{}
+	}
+	writeJSON(w, profiles)
+}
+
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	stats, err := s.db.Stats()
+	stats, err := s.db.Stats(r.URL.Query().Get("profile"))
 	if err != nil {
 		serverError(w, err)
 		return
@@ -88,7 +103,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	offset := atoiDefault(q.Get("offset"), 0)
 	sortBy := q.Get("sort")
 
-	sessions, err := s.db.Sessions(limit, offset, sortBy)
+	sessions, err := s.db.Sessions(limit, offset, sortBy, q.Get("profile"))
 	if err != nil {
 		serverError(w, err)
 		return
@@ -114,7 +129,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
-	skills, err := s.db.Skills()
+	skills, err := s.db.Skills(r.URL.Query().Get("profile"))
 	if err != nil {
 		serverError(w, err)
 		return
@@ -125,7 +140,7 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 // handleModels merges raw per-model rows into family buckets using the pricer's
 // normaliser, so the breakdown chart groups e.g. sonnet-4-5 and sonnet-4-6.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Models()
+	rows, err := s.db.Models(r.URL.Query().Get("profile"))
 	if err != nil {
 		serverError(w, err)
 		return
@@ -160,7 +175,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	days := atoiDefault(r.URL.Query().Get("days"), 30)
-	buckets, err := s.db.Timeline(days)
+	buckets, err := s.db.Timeline(days, r.URL.Query().Get("profile"))
 	if err != nil {
 		serverError(w, err)
 		return

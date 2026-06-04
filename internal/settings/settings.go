@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // The hook events cost-tracker registers for, and the matcher (if any) each
@@ -23,9 +24,60 @@ var hookEvents = []struct {
 	{"Stop", ""},
 }
 
-// Path returns the Claude Code settings.json that hooks should be written to.
-// CLAUDE_CONFIG_DIR wins; otherwise the first existing config dir among
-// ~/.claude and ~/.claude-work is used; otherwise the standard ~/.claude.
+// configDirNames are the Claude Code config directory names cost-tracker knows
+// about, in priority order. Each maps to a separate "profile" so a machine that
+// runs more than one Claude (e.g. a personal ~/.claude and a work ~/.claude-work)
+// can track each independently.
+var configDirNames = []string{".claude", ".claude-work"}
+
+// Profile is one Claude Code config location hooks can be wired into: a logical
+// label plus the directory and settings.json it resolves to.
+type Profile struct {
+	Name string // logical label, e.g. "default" or "work"
+	Dir  string // the config directory, e.g. /home/me/.claude
+	Path string // settings.json inside Dir
+}
+
+// ProfileName maps a config directory to a short logical label:
+//
+//	~/.claude       -> "default"
+//	~/.claude-work  -> "work"
+//	~/.claude-foo   -> "foo"
+//
+// Anything that does not follow the ".claude[-suffix]" convention falls back to
+// the directory's base name with a leading dot stripped.
+func ProfileName(dir string) string {
+	name := strings.TrimPrefix(filepath.Base(dir), ".")
+	switch {
+	case name == "" || name == "claude":
+		return "default"
+	case strings.HasPrefix(name, "claude-"):
+		return strings.TrimPrefix(name, "claude-")
+	default:
+		return name
+	}
+}
+
+// profileForDir builds a Profile from a config directory.
+func profileForDir(dir string) Profile {
+	return Profile{Name: ProfileName(dir), Dir: dir, Path: filepath.Join(dir, "settings.json")}
+}
+
+// HookCommand returns the hook command string written into settings for a
+// profile. The default profile keeps the bare "<bin> hook" form so installs
+// made before profiles existed are matched (and never duplicated) on re-run;
+// every named profile appends "--profile <name>" so its sessions are attributed
+// correctly.
+func HookCommand(binPath, profile string) string {
+	if profile == "" || profile == "default" {
+		return binPath + " hook"
+	}
+	return binPath + " hook --profile " + profile
+}
+
+// Path returns the single Claude Code settings.json that hooks should be written
+// to by default. CLAUDE_CONFIG_DIR wins; otherwise the first existing config dir
+// among ~/.claude and ~/.claude-work is used; otherwise the standard ~/.claude.
 func Path() (string, error) {
 	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
 		return filepath.Join(d, "settings.json"), nil
@@ -34,7 +86,7 @@ func Path() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, name := range []string{".claude", ".claude-work"} {
+	for _, name := range configDirNames {
 		dir := filepath.Join(home, name)
 		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
 			return filepath.Join(dir, "settings.json"), nil
@@ -43,11 +95,47 @@ func Path() (string, error) {
 	return filepath.Join(home, ".claude", "settings.json"), nil
 }
 
-// InstallHooks ensures the cost-tracker hook command is present in the
-// settings file at path, running "<binPath> hook". It returns the list of
-// events that were newly added (empty if everything was already present).
-func InstallHooks(path, binPath string) ([]string, error) {
-	cmd := binPath + " hook"
+// DefaultProfile is the single profile Path() resolves to — the target used
+// when install-hooks is run with no flags.
+func DefaultProfile() (Profile, error) {
+	p, err := Path()
+	if err != nil {
+		return Profile{}, err
+	}
+	return profileForDir(filepath.Dir(p)), nil
+}
+
+// AllProfiles returns every Claude Code config location hooks should be wired
+// into. CLAUDE_CONFIG_DIR, when set, pins a single profile; otherwise every
+// existing dir among ~/.claude and ~/.claude-work is returned. If none exist,
+// the default (~/.claude) is returned so there is always at least one target.
+func AllProfiles() ([]Profile, error) {
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return []Profile{profileForDir(d)}, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	var profiles []Profile
+	for _, name := range configDirNames {
+		dir := filepath.Join(home, name)
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			profiles = append(profiles, profileForDir(dir))
+		}
+	}
+	if len(profiles) == 0 {
+		profiles = append(profiles, profileForDir(filepath.Join(home, ".claude")))
+	}
+	return profiles, nil
+}
+
+// InstallHooks ensures the cost-tracker hook command for the given profile is
+// present in the settings file at path, running "<binPath> hook" (default
+// profile) or "<binPath> hook --profile <name>". It returns the list of events
+// that were newly added (empty if everything was already present).
+func InstallHooks(path, binPath, profile string) ([]string, error) {
+	cmd := HookCommand(binPath, profile)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -79,11 +167,11 @@ func InstallHooks(path, binPath string) ([]string, error) {
 	return added, nil
 }
 
-// RemoveHooks strips every cost-tracker hook group (any whose command ends in
-// " hook" and points at binPath) from the settings file. It returns the events
-// it touched. Used by the uninstall path.
+// RemoveHooks strips every cost-tracker hook group (any whose command begins
+// with "<binPath> hook", covering the default and every named profile) from the
+// settings file. It returns the events it touched. Used by the uninstall path.
 func RemoveHooks(path, binPath string) ([]string, error) {
-	cmd := binPath + " hook"
+	prefix := binPath + " hook"
 	data, err := load(path)
 	if err != nil {
 		return nil, err
@@ -102,7 +190,7 @@ func RemoveHooks(path, binPath string) ([]string, error) {
 		kept := groups[:0]
 		changed := false
 		for _, g := range groups {
-			if groupHasCmd(g, cmd) {
+			if groupHasCmdPrefix(g, prefix) {
 				changed = true
 				continue
 			}
@@ -186,6 +274,16 @@ func addHook(hooks map[string]any, event, matcher, cmd string) bool {
 
 // groupHasCmd reports whether a hook group contains a command equal to cmd.
 func groupHasCmd(group any, cmd string) bool {
+	return groupMatches(group, func(c string) bool { return c == cmd })
+}
+
+// groupHasCmdPrefix reports whether a hook group contains a command starting
+// with prefix — used by removal to catch the default and every named profile.
+func groupHasCmdPrefix(group any, prefix string) bool {
+	return groupMatches(group, func(c string) bool { return strings.HasPrefix(c, prefix) })
+}
+
+func groupMatches(group any, match func(cmd string) bool) bool {
 	gm, ok := group.(map[string]any)
 	if !ok {
 		return false
@@ -199,7 +297,7 @@ func groupHasCmd(group any, cmd string) bool {
 		if !ok {
 			continue
 		}
-		if c, _ := hm["command"].(string); c == cmd {
+		if c, _ := hm["command"].(string); match(c) {
 			return true
 		}
 	}

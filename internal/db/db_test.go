@@ -41,6 +41,14 @@ func (d *DB) insertSession(t *testing.T, id, cwd, model string, in, out, cacheR,
 	}
 }
 
+// setProfile overrides the profile of an already-inserted session.
+func (d *DB) setProfile(t *testing.T, id, profile string) {
+	t.Helper()
+	if _, err := d.Exec(`UPDATE sessions SET profile = ? WHERE id = ?`, profile, id); err != nil {
+		t.Fatalf("setProfile %s: %v", id, err)
+	}
+}
+
 func (d *DB) insertSkill(t *testing.T, sessionID, skill string) {
 	t.Helper()
 	if _, err := d.Exec(
@@ -62,7 +70,7 @@ func (d *DB) insertTool(t *testing.T, sessionID, tool string) {
 func TestStats(t *testing.T) {
 	d := openTestDB(t)
 
-	empty, err := d.Stats()
+	empty, err := d.Stats("")
 	if err != nil {
 		t.Fatalf("Stats (empty): %v", err)
 	}
@@ -74,7 +82,7 @@ func TestStats(t *testing.T) {
 	d.insertSession(t, "s1", "/a", "claude-opus-4", 100, 50, 0, 0, 2.0, now)
 	d.insertSession(t, "s2", "/b", "claude-sonnet-4", 200, 80, 0, 0, 1.0, now)
 
-	s, err := d.Stats()
+	s, err := d.Stats("")
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
@@ -104,7 +112,7 @@ func TestSessionsSortAndSkills(t *testing.T) {
 	d.insertSkill(t, "pricey", "deploy")
 
 	// Default sort is cost DESC.
-	rows, err := d.Sessions(0, 0, "")
+	rows, err := d.Sessions(0, 0, "", "")
 	if err != nil {
 		t.Fatalf("Sessions: %v", err)
 	}
@@ -123,7 +131,7 @@ func TestSessionsSortAndSkills(t *testing.T) {
 	}
 
 	// Limit + offset.
-	page, err := d.Sessions(1, 1, "cost")
+	page, err := d.Sessions(1, 1, "cost", "")
 	if err != nil {
 		t.Fatalf("Sessions paged: %v", err)
 	}
@@ -169,7 +177,7 @@ func TestSkillsAttribution(t *testing.T) {
 	d.insertSession(t, "s2", "/b", "claude-sonnet-4", 0, 0, 0, 0, 4.0, now)
 	d.insertSkill(t, "s2", "pr")
 
-	skills, err := d.Skills()
+	skills, err := d.Skills("")
 	if err != nil {
 		t.Fatalf("Skills: %v", err)
 	}
@@ -201,7 +209,7 @@ func TestModels(t *testing.T) {
 	d.insertSession(t, "s2", "/b", "claude-opus-4", 200, 20, 0, 0, 3.0, now)
 	d.insertSession(t, "s3", "/c", "", 50, 5, 0, 0, 1.0, now) // empty model → "unknown"
 
-	models, err := d.Models()
+	models, err := d.Models("")
 	if err != nil {
 		t.Fatalf("Models: %v", err)
 	}
@@ -225,6 +233,91 @@ func TestModels(t *testing.T) {
 	}
 }
 
+func TestProfileFiltering(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	d.insertSession(t, "w1", "/work", "claude-opus-4", 100, 10, 0, 0, 5.0, now)
+	d.setProfile(t, "w1", "work")
+	d.insertSkill(t, "w1", "deploy")
+	d.insertSession(t, "p1", "/home", "claude-sonnet-4", 50, 5, 0, 0, 2.0, now)
+	// p1 keeps the schema default profile "default".
+
+	// Profiles lists both, sorted.
+	profiles, err := d.Profiles()
+	if err != nil {
+		t.Fatalf("Profiles: %v", err)
+	}
+	if len(profiles) != 2 || profiles[0] != "default" || profiles[1] != "work" {
+		t.Fatalf("Profiles = %v, want [default work]", profiles)
+	}
+
+	// Stats scoped to "work" only sees w1.
+	st, err := d.Stats("work")
+	if err != nil {
+		t.Fatalf("Stats(work): %v", err)
+	}
+	if st.TotalSessions != 1 || st.TotalCostUSD != 5.0 {
+		t.Errorf("Stats(work) = %+v, want 1 session / 5.0", st)
+	}
+	// Empty profile = all.
+	if all, _ := d.Stats(""); all.TotalSessions != 2 {
+		t.Errorf("Stats(all).TotalSessions = %d, want 2", all.TotalSessions)
+	}
+
+	// Sessions, Skills, Models, Timeline all respect the filter.
+	if rows, _ := d.Sessions(10, 0, "cost", "work"); len(rows) != 1 || rows[0].ID != "w1" || rows[0].Profile != "work" {
+		t.Errorf("Sessions(work) = %+v, want only w1 tagged work", rows)
+	}
+	if skills, _ := d.Skills("default"); len(skills) != 0 {
+		t.Errorf("Skills(default) = %+v, want none (deploy is in work)", skills)
+	}
+	if models, _ := d.Models("work"); len(models) != 1 || models[0].Model != "claude-opus-4" {
+		t.Errorf("Models(work) = %+v, want only claude-opus-4", models)
+	}
+	if buckets, _ := d.Timeline(30, "work"); len(buckets) != 1 || buckets[0].CostUSD != 5.0 {
+		t.Errorf("Timeline(work) = %+v, want one bucket of 5.0", buckets)
+	}
+}
+
+// A database created before the profile column existed must gain it (defaulting
+// to "default") when Migrate runs.
+func TestMigrateAddsProfileColumnToOldDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	// Simulate the first-release schema (no profile column) and a legacy row.
+	if _, err := d.Exec(`CREATE TABLE sessions (
+		id TEXT PRIMARY KEY, cwd TEXT, model TEXT,
+		started_at DATETIME, ended_at DATETIME,
+		input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
+		cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0,
+		cost_usd REAL DEFAULT 0, transcript_path TEXT)`); err != nil {
+		t.Fatalf("seed old schema: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO sessions (id, cost_usd) VALUES ('legacy', 1.0)`); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	var profile string
+	if err := d.QueryRow(`SELECT profile FROM sessions WHERE id = 'legacy'`).Scan(&profile); err != nil {
+		t.Fatalf("read back-filled profile: %v", err)
+	}
+	if profile != "default" {
+		t.Errorf("legacy profile = %q, want default", profile)
+	}
+	// Migrate must remain idempotent after the column is added.
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("second Migrate: %v", err)
+	}
+}
+
 func TestTimeline(t *testing.T) {
 	d := openTestDB(t)
 	today := time.Now().UTC().Format(time.RFC3339)
@@ -233,7 +326,7 @@ func TestTimeline(t *testing.T) {
 	d.insertSession(t, "recent2", "/b", "claude-opus-4", 0, 0, 0, 0, 3.0, today)
 	d.insertSession(t, "ancient", "/c", "claude-opus-4", 0, 0, 0, 0, 9.0, old)
 
-	buckets, err := d.Timeline(30)
+	buckets, err := d.Timeline(30, "")
 	if err != nil {
 		t.Fatalf("Timeline: %v", err)
 	}

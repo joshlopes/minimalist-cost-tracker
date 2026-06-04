@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS sessions (
     id              TEXT PRIMARY KEY,   -- session_id from hook
     cwd             TEXT,
+    profile         TEXT NOT NULL DEFAULT 'default', -- which Claude config installed the hook
     model           TEXT,
     started_at      DATETIME,
     ended_at        DATETIME,
@@ -31,3 +32,5 @@ CREATE TABLE IF NOT EXISTS tool_events (
 CREATE INDEX IF NOT EXISTS idx_skill_events_session ON skill_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_tool_events_session  ON tool_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_ended       ON sessions(ended_at);
+-- idx_sessions_profile is created in Migrate(), after ensureColumn has added the
+-- profile column to databases that predate it.

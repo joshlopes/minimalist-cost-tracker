@@ -13,6 +13,15 @@ async function getJSON(url) {
   return res.json();
 }
 
+// ---- profile filter ----
+// Empty string means "all profiles". withProfile() appends it to any API URL.
+let currentProfile = "";
+
+function withProfile(url) {
+  if (!currentProfile) return url;
+  return url + (url.includes("?") ? "&" : "?") + "profile=" + encodeURIComponent(currentProfile);
+}
+
 // ---- tabs ----
 document.getElementById("tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-tab]");
@@ -22,6 +31,14 @@ document.getElementById("tabs").addEventListener("click", (e) => {
   btn.classList.add("active");
   document.getElementById(btn.dataset.tab).classList.add("active");
 });
+
+// Chart instances are kept so a profile-filter reload can destroy the old chart
+// before drawing a new one on the same canvas (Chart.js rejects a reused canvas).
+const charts = {};
+function drawChart(key, canvas, config) {
+  if (charts[key]) charts[key].destroy();
+  charts[key] = new Chart(canvas, config);
+}
 
 // ---- overview ----
 function renderStats(s) {
@@ -45,7 +62,9 @@ function renderTimeline(buckets) {
     canvas.hidden = true;
     return;
   }
-  new Chart(canvas, {
+  empty.hidden = true;
+  canvas.hidden = false;
+  drawChart("timeline", canvas, {
     type: "bar",
     data: {
       labels: buckets.map((b) => b.date),
@@ -59,7 +78,7 @@ function renderTimeline(buckets) {
 let sessionSort = "cost";
 
 async function renderSessions() {
-  const sessions = await getJSON("/api/sessions?sort=" + sessionSort + "&limit=200");
+  const sessions = await getJSON(withProfile("/api/sessions?sort=" + sessionSort + "&limit=200"));
   const tbody = document.querySelector("#sessions-table tbody");
   const empty = document.getElementById("sessions-empty");
   tbody.innerHTML = "";
@@ -74,7 +93,7 @@ async function renderSessions() {
     const tr = document.createElement("tr");
     tr.className = "session-row";
     tr.innerHTML =
-      `<td>${when}</td><td title="${s.cwd || ""}">${shortPath(s.cwd)}</td>` +
+      `<td>${when}</td><td>${s.profile || "default"}</td><td title="${s.cwd || ""}">${shortPath(s.cwd)}</td>` +
       `<td>${s.model || "—"}</td><td class="num">${fmtUSD(s.cost_usd)}</td><td>${skills}</td>`;
     tr.addEventListener("click", () => toggleDetail(tr, s.id));
     tbody.appendChild(tr);
@@ -107,7 +126,7 @@ async function toggleDetail(row, id) {
     .join(" ") || "none";
   const tr = document.createElement("tr");
   tr.className = "detail";
-  tr.innerHTML = `<td colspan="5"><strong>Skills:</strong> ${skillChips}<br><strong>Tools:</strong> ${toolChips}</td>`;
+  tr.innerHTML = `<td colspan="6"><strong>Skills:</strong> ${skillChips}<br><strong>Tools:</strong> ${toolChips}</td>`;
   row.after(tr);
 }
 
@@ -130,6 +149,7 @@ function renderSkills(skills) {
     return;
   }
   empty.hidden = true;
+  canvas.hidden = false;
   for (const s of skills) {
     const tr = document.createElement("tr");
     tr.innerHTML =
@@ -138,7 +158,7 @@ function renderSkills(skills) {
       `<td class="num">${fmtUSD(s.total_cost_usd)}</td>`;
     tbody.appendChild(tr);
   }
-  new Chart(canvas, {
+  drawChart("skills", canvas, {
     type: "bar",
     data: {
       labels: skills.map((s) => s.skill_name),
@@ -162,6 +182,7 @@ function renderModels(models) {
     return;
   }
   empty.hidden = true;
+  canvas.hidden = false;
   for (const m of models) {
     const tr = document.createElement("tr");
     tr.innerHTML =
@@ -170,7 +191,7 @@ function renderModels(models) {
       `<td class="num">${fmtUSD(m.total_cost_usd)}</td>`;
     tbody.appendChild(tr);
   }
-  new Chart(canvas, {
+  drawChart("models", canvas, {
     type: "doughnut",
     data: {
       labels: models.map((m) => m.model),
@@ -180,14 +201,39 @@ function renderModels(models) {
   });
 }
 
+// ---- profile selector ----
+// Populate the dropdown once; only reveal it when more than one profile has
+// recorded sessions (a single-profile install needs no filter UI).
+async function initProfiles() {
+  const control = document.getElementById("profile-control");
+  const select = document.getElementById("profile-select");
+  try {
+    const profiles = await getJSON("/api/profiles");
+    if (!profiles || profiles.length <= 1) return;
+    select.innerHTML =
+      `<option value="">All profiles</option>` +
+      profiles.map((p) => `<option value="${p}">${p}</option>`).join("");
+    select.value = currentProfile;
+    select.addEventListener("change", () => {
+      currentProfile = select.value;
+      loadAll();
+    });
+    control.hidden = false;
+  } catch (err) {
+    console.error("profiles load failed:", err);
+  }
+}
+
 // ---- boot ----
-async function boot() {
+// loadAll fetches every endpoint for the current profile and re-renders. It is
+// re-run whenever the profile filter changes.
+async function loadAll() {
   try {
     const [stats, timeline, skills, models] = await Promise.all([
-      getJSON("/api/stats"),
-      getJSON("/api/timeline?days=30"),
-      getJSON("/api/skills"),
-      getJSON("/api/models"),
+      getJSON(withProfile("/api/stats")),
+      getJSON(withProfile("/api/timeline?days=30")),
+      getJSON(withProfile("/api/skills")),
+      getJSON(withProfile("/api/models")),
     ]);
     renderStats(stats);
     renderTimeline(timeline);
@@ -197,6 +243,11 @@ async function boot() {
   } catch (err) {
     console.error("dashboard load failed:", err);
   }
+}
+
+async function boot() {
+  await initProfiles();
+  await loadAll();
 }
 
 boot();

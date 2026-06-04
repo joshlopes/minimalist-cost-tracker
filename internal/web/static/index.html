@@ -29,6 +29,12 @@
     header { padding: 20px 28px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 12px; }
     header h1 { font-size: 18px; margin: 0; font-weight: 650; }
     header .sub { color: var(--muted); font-size: 13px; }
+    header .profile { margin-left: auto; align-self: center; display: flex; align-items: center; gap: 8px; }
+    header .profile label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    header .profile select {
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 5px 10px; font-size: 13px;
+    }
     nav { display: flex; gap: 4px; padding: 12px 28px 0; border-bottom: 1px solid var(--border); }
     nav button {
       background: none; border: none; color: var(--muted); padding: 10px 14px;
@@ -61,6 +67,10 @@
   <header>
     <h1>Cost Tracker</h1>
     <span class="sub">Claude Code session telemetry — local only</span>
+    <span class="profile" id="profile-control" hidden>
+      <label for="profile-select">Profile</label>
+      <select id="profile-select"></select>
+    </span>
   </header>
   <nav id="tabs">
     <button data-tab="overview" class="active">Overview</button>
@@ -86,6 +96,7 @@
           <thead>
             <tr>
               <th data-sort="date">When</th>
+              <th>Profile</th>
               <th>Working dir</th>
               <th>Model</th>
               <th class="num" data-sort="cost">Cost (USD)</th>
