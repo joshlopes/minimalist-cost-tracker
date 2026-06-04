@@ -40,6 +40,26 @@ function drawChart(key, canvas, config) {
   charts[key] = new Chart(canvas, config);
 }
 
+// vGradient builds a top-to-bottom canvas gradient between two colors, so the
+// bar charts read less flat than a single fill.
+function vGradient(canvas, top, bottom) {
+  const g = canvas.getContext("2d").createLinearGradient(0, 0, 0, canvas.height || 320);
+  g.addColorStop(0, top);
+  g.addColorStop(1, bottom);
+  return g;
+}
+
+// clearChart tears down a chart when its panel has no data. Destroying the
+// instance is essential: Chart.js writes an inline `display:block` onto the
+// canvas that outranks the [hidden] rule, so `canvas.hidden = true` alone would
+// leave the previous profile's chart on screen after a filter switch.
+function clearChart(key) {
+  if (charts[key]) {
+    charts[key].destroy();
+    delete charts[key];
+  }
+}
+
 // ---- overview ----
 function renderStats(s) {
   const cards = [
@@ -60,6 +80,7 @@ function renderTimeline(buckets) {
   if (!buckets || buckets.length === 0) {
     empty.hidden = false;
     canvas.hidden = true;
+    clearChart("timeline");
     return;
   }
   empty.hidden = true;
@@ -68,7 +89,13 @@ function renderTimeline(buckets) {
     type: "bar",
     data: {
       labels: buckets.map((b) => b.date),
-      datasets: [{ label: "Daily cost (USD)", data: buckets.map((b) => b.cost_usd), backgroundColor: "#6ea8fe" }],
+      datasets: [{
+        label: "Daily cost (USD)",
+        data: buckets.map((b) => b.cost_usd),
+        backgroundColor: vGradient(canvas, "#a78bfa", "#6ea8fe"),
+        borderRadius: 6,
+        maxBarThickness: 42,
+      }],
     },
     options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } },
   });
@@ -146,6 +173,7 @@ function renderSkills(skills) {
   if (!skills || skills.length === 0) {
     empty.hidden = false;
     canvas.hidden = true;
+    clearChart("skills");
     return;
   }
   empty.hidden = true;
@@ -162,7 +190,13 @@ function renderSkills(skills) {
     type: "bar",
     data: {
       labels: skills.map((s) => s.skill_name),
-      datasets: [{ label: "Total attributed cost (USD)", data: skills.map((s) => s.total_cost_usd), backgroundColor: "#6ea8fe" }],
+      datasets: [{
+        label: "Total attributed cost (USD)",
+        data: skills.map((s) => s.total_cost_usd),
+        backgroundColor: skills.map((_, i) => palette[i % palette.length]),
+        borderRadius: 6,
+        maxBarThickness: 26,
+      }],
     },
     options: { indexAxis: "y", responsive: true, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true } } },
   });
@@ -179,6 +213,7 @@ function renderModels(models) {
   if (!models || models.length === 0) {
     empty.hidden = false;
     canvas.hidden = true;
+    clearChart("models");
     return;
   }
   empty.hidden = true;
@@ -195,9 +230,16 @@ function renderModels(models) {
     type: "doughnut",
     data: {
       labels: models.map((m) => m.model),
-      datasets: [{ data: models.map((m) => m.total_cost_usd), backgroundColor: models.map((_, i) => palette[i % palette.length]) }],
+      datasets: [{
+        data: models.map((m) => m.total_cost_usd),
+        backgroundColor: models.map((_, i) => palette[i % palette.length]),
+        borderColor: "transparent",
+        borderRadius: 4,
+        spacing: 2,
+        hoverOffset: 10,
+      }],
     },
-    options: { responsive: true, plugins: { legend: { position: "right" } } },
+    options: { responsive: true, cutout: "62%", plugins: { legend: { position: "right" } } },
   });
 }
 
