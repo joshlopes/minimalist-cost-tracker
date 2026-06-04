@@ -1,32 +1,44 @@
 // Command cost-tracker is the single binary behind the minimalist cost
-// tracker. It runs in three modes: `hook` (invoked by Claude Code per event),
-// `serve` (the dashboard), and `migrate` (schema setup, used by setup.sh).
+// tracker. Beyond the runtime modes (`hook`, `serve`, `migrate`) it also owns
+// its own lifecycle: `install-hooks` wires it into Claude Code, `service`
+// runs the dashboard on login, and `update` self-upgrades from the latest
+// GitHub release — so the curl|sh installer needs nothing but this binary.
 package main
 
 import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/lendable/minimalist-cost-tracker/internal/db"
 	"github.com/lendable/minimalist-cost-tracker/internal/hook"
 	"github.com/lendable/minimalist-cost-tracker/internal/pricing"
 	"github.com/lendable/minimalist-cost-tracker/internal/recorder"
+	"github.com/lendable/minimalist-cost-tracker/internal/selfupdate"
+	"github.com/lendable/minimalist-cost-tracker/internal/service"
+	"github.com/lendable/minimalist-cost-tracker/internal/settings"
 	"github.com/lendable/minimalist-cost-tracker/internal/web"
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
+const defaultPort = 7842
+
 const usage = `cost-tracker — track Claude Code session costs
 
 Usage:
-  cost-tracker hook              read a hook event from stdin and record it
-  cost-tracker serve [--port N]  start the dashboard (default port 7842)
-  cost-tracker migrate           create/upgrade the database schema
-  cost-tracker version           print version
+  cost-tracker hook                 read a hook event from stdin and record it
+  cost-tracker serve [--port N]     start the dashboard (default port 7842)
+  cost-tracker migrate              create/upgrade the database schema
+  cost-tracker install-hooks        wire the hooks into Claude Code settings.json
+  cost-tracker service <cmd>        install|uninstall|status the login service
+  cost-tracker update [--repo R]    self-update to the latest GitHub release
+  cost-tracker version              print version
 `
 
 func main() {
@@ -42,6 +54,14 @@ func main() {
 		runServe(os.Args[2:])
 	case "migrate":
 		runMigrate()
+	case "install-hooks":
+		runInstallHooks(os.Args[2:])
+	case "service":
+		runService(os.Args[2:])
+	case "update", "self-update":
+		runUpdate(os.Args[2:])
+	case "free-port":
+		runFreePort(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
@@ -86,6 +106,19 @@ func openDB() (*db.DB, error) {
 	return db.Open(path)
 }
 
+// selfPath returns the absolute path to this executable, used when writing
+// hooks and service definitions so they survive a moved working directory.
+func selfPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "cost-tracker"
+	}
+	if abs, err := filepath.Abs(exe); err == nil {
+		return abs
+	}
+	return exe
+}
+
 // runHook records one event from stdin. It logs to hook.log and always exits 0
 // so a tracker failure never breaks a Claude Code session.
 func runHook() {
@@ -111,8 +144,12 @@ func runHook() {
 
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	port := fs.Int("port", 7842, "port to serve the dashboard on")
+	port := fs.Int("port", defaultPort, "port to serve the dashboard on")
 	_ = fs.Parse(args)
+
+	if err := checkPortFree(*port); err != nil {
+		log.Fatalf("serve: port %d unavailable: %v", *port, err)
+	}
 
 	database, err := openDB()
 	if err != nil {
@@ -139,4 +176,106 @@ func runMigrate() {
 		log.Fatalf("migrate: %v", err)
 	}
 	fmt.Println("schema up to date")
+}
+
+func runInstallHooks(args []string) {
+	fs := flag.NewFlagSet("install-hooks", flag.ExitOnError)
+	settingsPath := fs.String("settings", "", "path to Claude Code settings.json (auto-detected if empty)")
+	_ = fs.Parse(args)
+
+	path := *settingsPath
+	if path == "" {
+		p, err := settings.Path()
+		if err != nil {
+			log.Fatalf("install-hooks: locate settings: %v", err)
+		}
+		path = p
+	}
+
+	added, err := settings.InstallHooks(path, selfPath())
+	if err != nil {
+		log.Fatalf("install-hooks: %v", err)
+	}
+	if len(added) == 0 {
+		fmt.Printf("hooks already present in %s\n", path)
+		return
+	}
+	fmt.Printf("wired hooks (%v) into %s\n", added, path)
+}
+
+func runService(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: cost-tracker service <install|uninstall|status> [--port N]")
+		os.Exit(2)
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("service", flag.ExitOnError)
+	port := fs.Int("port", defaultPort, "port the dashboard service listens on")
+	_ = fs.Parse(args[1:])
+
+	switch sub {
+	case "install":
+		if err := service.Install(selfPath(), *port); err != nil {
+			log.Fatalf("service install: %v", err)
+		}
+		fmt.Printf("service installed; dashboard will run on http://localhost:%d\n", *port)
+	case "uninstall":
+		if err := service.Uninstall(); err != nil {
+			log.Fatalf("service uninstall: %v", err)
+		}
+		fmt.Println("service removed")
+	case "status":
+		s, err := service.Status()
+		if err != nil {
+			log.Fatalf("service status: %v", err)
+		}
+		fmt.Println(s)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown service command %q\n", sub)
+		os.Exit(2)
+	}
+}
+
+func runUpdate(args []string) {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	repo := fs.String("repo", selfupdate.DefaultRepo, "GitHub owner/name to update from")
+	_ = fs.Parse(args)
+
+	newVersion, updated, err := selfupdate.Run(*repo, version, selfPath(), os.Stdout)
+	if err != nil {
+		log.Fatalf("update: %v", err)
+	}
+	if !updated {
+		fmt.Printf("already up to date (%s)\n", version)
+		return
+	}
+	fmt.Printf("updated %s -> %s\n", version, newVersion)
+	fmt.Println("restart the dashboard (or its service) to run the new version.")
+}
+
+// runFreePort prints the first free TCP port at or above --start, so the
+// installer can pick a dashboard port without fragile shell port probing. It
+// is intentionally undocumented in the usage text (an installer helper).
+func runFreePort(args []string) {
+	fs := flag.NewFlagSet("free-port", flag.ExitOnError)
+	start := fs.Int("start", defaultPort, "lowest port to consider")
+	_ = fs.Parse(args)
+
+	for p := *start; p < *start+100 && p <= 65535; p++ {
+		if checkPortFree(p) == nil {
+			fmt.Println(p)
+			return
+		}
+	}
+	log.Fatalf("free-port: no free port found in [%d, %d)", *start, *start+100)
+}
+
+// checkPortFree returns nil if a TCP listener can bind the port, otherwise an
+// error explaining it is in use. It binds and immediately closes.
+func checkPortFree(port int) error {
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		return err
+	}
+	return ln.Close()
 }
