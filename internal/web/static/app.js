@@ -266,6 +266,24 @@ async function initProfiles() {
   }
 }
 
+// ---- update banner ----
+// Ask the server for its version once on load. The server checks GitHub in the
+// background, so this returns instantly; if a newer release has been detected we
+// surface a banner telling the user how to upgrade.
+async function checkVersion() {
+  try {
+    const v = await getJSON("/api/version");
+    if (!v || !v.update_available) return;
+    const banner = document.getElementById("update-banner");
+    banner.innerHTML =
+      `<span>✨</span><span>A newer version (<strong>${v.latest}</strong>) is available — ` +
+      `you're on ${v.current}. Update with <code>cost-tracker update</code>.</span>`;
+    banner.hidden = false;
+  } catch (err) {
+    console.error("version check failed:", err);
+  }
+}
+
 // ---- boot ----
 // loadAll fetches every endpoint for the current profile and re-renders. It is
 // re-run whenever the profile filter changes.
@@ -288,6 +306,7 @@ async function loadAll() {
 }
 
 async function boot() {
+  checkVersion();
   await initProfiles();
   await loadAll();
 }

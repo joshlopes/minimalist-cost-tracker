@@ -24,17 +24,18 @@ Release (no Go toolchain, no clone), verifies its checksum, then:
    `settings.json` (auto-detected: `CLAUDE_CONFIG_DIR`, else `~/.claude`, else
    `~/.claude-work`);
 4. picks a free port (starting at `7842`);
-5. installs a start-on-login service (launchd on macOS, systemd-user on Linux)
-   and starts the dashboard.
+5. **asks** whether to run the dashboard as a start-on-login service (launchd on
+   macOS, systemd-user on Linux). The dashboard is optional — hooks record cost
+   data either way, and you can start it any time with `cost-tracker serve`.
 
-It finishes with the URL your dashboard is running on. The installer is
-idempotent and configurable via environment variables:
+If you answer yes it finishes with the URL your dashboard is running on. The
+installer is idempotent and configurable via environment variables:
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `VERSION` | latest | install a specific tag, e.g. `v1.2.3` |
 | `COST_TRACKER_PORT` | `7842` | preferred port (a free one is chosen if busy) |
-| `COST_TRACKER_SERVICE` | `1` | set `0` to skip the login service |
+| `COST_TRACKER_SERVICE` | _ask_ | `1` runs the dashboard server, `0` skips it; set it to install unattended without the prompt (no terminal → defaults to `1`) |
 | `BIN_DIR` | `~/.local/bin` | install location |
 | `REPO` | `joshlopes/minimalist-cost-tracker` | release source |
 
@@ -60,12 +61,19 @@ Requires Go 1.22+. Hooks take effect on your **next** Claude Code session.
 
 ```sh
 cost-tracker update        # self-update to the latest GitHub release
+cost-tracker update --check # only report whether a newer release exists
 ```
 
 `update` checks the latest release, downloads the matching binary, verifies its
 checksum, and atomically replaces itself in place. Restart the dashboard (or run
 `cost-tracker service install` again) to run the new version. Homebrew users
 update with `brew upgrade cost-tracker` instead.
+
+The running dashboard also checks GitHub for newer releases in the background
+(on start, then every few hours) and shows an **update-available banner** at the
+top of the page when one is found, so you don't have to remember to check. The
+same data is available at `/api/version`
+(`{"current","latest","update_available"}`).
 
 ## Use
 
@@ -92,8 +100,12 @@ cost-tracker install-hooks [--all] wire the hooks into Claude Code settings.json
                                   (--all = every profile; --settings P = a specific one)
 cost-tracker service install      install + start the login service (--port N)
 cost-tracker service uninstall    stop and remove the login service
+cost-tracker service start        start the installed service
+cost-tracker service stop         stop it (keeps the definition; restarts on login)
+cost-tracker service restart      restart it (e.g. to pick up a new binary)
 cost-tracker service status       show the login-service status
 cost-tracker update [--repo R]    self-update to the latest GitHub release
+                                  (--check = report only, don't update)
 cost-tracker version              print version
 ```
 

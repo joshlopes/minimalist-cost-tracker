@@ -13,12 +13,33 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 BIN_PATH="$BIN_DIR/cost-tracker"
-WANT_SERVICE="${COST_TRACKER_SERVICE:-1}"
+# WANT_SERVICE is left empty when COST_TRACKER_SERVICE is unset, so prompt_service
+# can ask interactively; an explicit env value always wins (unattended installs).
+WANT_SERVICE="${COST_TRACKER_SERVICE:-}"
 PREFERRED_PORT="${COST_TRACKER_PORT:-7842}"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$1" >&2; }
 fail() { printf '\033[1;31merror:\033[0m %s\n' "$1" >&2; exit 1; }
+
+# prompt_service decides whether to run the dashboard server. The dashboard is
+# optional: hooks record cost data regardless, and the dashboard can be started
+# any time with `cost-tracker serve`. An explicit COST_TRACKER_SERVICE wins; with
+# no env value we ask on the terminal; with no terminal we default to yes.
+prompt_service() {
+  [ -n "$WANT_SERVICE" ] && return
+  if [ -r /dev/tty ]; then
+    printf '\033[1;34m==>\033[0m %s' \
+      "Run the cost dashboard as a background service that starts on login? [Y/n] " > /dev/tty
+    read -r reply < /dev/tty || reply=""
+    case "$reply" in
+      [Nn]*) WANT_SERVICE=0 ;;
+      *)     WANT_SERVICE=1 ;;
+    esac
+  else
+    WANT_SERVICE=1
+  fi
+}
 
 # --- 1. check Go >= 1.22 --------------------------------------------------
 command -v go >/dev/null 2>&1 || fail "Go is not installed (need 1.22+). See https://go.dev/dl/"
@@ -43,19 +64,32 @@ info "Migrating database"
 info "Wiring Claude Code hooks"
 "$BIN_PATH" install-hooks
 
-# --- 4. pick a port + start -----------------------------------------------
+# --- 4. dashboard server (optional) ---------------------------------------
+# Ask whether to run the dashboard server. Declining leaves the hooks recording
+# data; the dashboard can be started any time with `cost-tracker serve`.
+prompt_service
+
 PORT="$("$BIN_PATH" free-port --start "$PREFERRED_PORT")"
 [ "$PORT" = "$PREFERRED_PORT" ] || warn "port $PREFERRED_PORT busy; using $PORT"
 
-if [ "$WANT_SERVICE" = "1" ] && "$BIN_PATH" service install --port "$PORT" >/dev/null 2>&1; then
-  info "Installed login service"
-else
-  [ "$WANT_SERVICE" = "1" ] && warn "could not install login service; start manually with: cost-tracker serve"
+SERVING=0
+if [ "$WANT_SERVICE" = "1" ]; then
+  if "$BIN_PATH" service install --port "$PORT" >/dev/null 2>&1; then
+    info "Installed login service"
+    SERVING=1
+  else
+    warn "could not install login service; start manually with: cost-tracker serve"
+  fi
 fi
 
 info "Done."
 echo
-echo "  Hooks successfully installed. Start/Open the dashboard on http://localhost:$PORT"
+if [ "$SERVING" = "1" ]; then
+  echo "  Hooks successfully installed. Start/Open the dashboard on http://localhost:$PORT"
+else
+  echo "  Hooks successfully installed. The dashboard server was not started."
+  echo "  Start it any time with:  cost-tracker serve   (then open http://localhost:$PORT)"
+fi
 echo "  (Hooks take effect on your next Claude Code session.)"
 if ! printf '%s' ":$PATH:" | grep -q ":$BIN_DIR:"; then
   echo

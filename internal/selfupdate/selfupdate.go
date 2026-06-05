@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -95,6 +96,65 @@ func Run(repo, current, execPath string, out io.Writer) (string, bool, error) {
 		return "", false, err
 	}
 	return rel.TagName, true, nil
+}
+
+// LatestVersion returns the tag of the most recent published release for repo
+// without downloading any asset. It is the lightweight check the dashboard uses
+// to tell the user a newer version exists.
+func LatestVersion(repo string) (string, error) {
+	if repo == "" {
+		repo = DefaultRepo
+	}
+	rel, err := latest(repo)
+	if err != nil {
+		return "", err
+	}
+	if rel.TagName == "" {
+		return "", fmt.Errorf("no published releases for %s", repo)
+	}
+	return rel.TagName, nil
+}
+
+// IsNewer reports whether latest is a strictly newer release than current.
+// Either may carry a leading "v". A current version that is not a parseable
+// release (e.g. a "dev" build) is never reported as outdated, so local builds
+// are not nagged to update.
+func IsNewer(current, latest string) bool {
+	cur, ok1 := parseSemver(current)
+	lat, ok2 := parseSemver(latest)
+	if !ok1 || !ok2 {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if lat[i] != cur[i] {
+			return lat[i] > cur[i]
+		}
+	}
+	return false
+}
+
+// parseSemver extracts major.minor.patch from a version like "v1.4.0" or "1.4"
+// (missing components default to 0). Any pre-release/build suffix ("-rc1",
+// "+meta") is ignored. It returns false if a component is non-numeric, so
+// non-release strings like "dev" don't compare as versions.
+func parseSemver(v string) ([3]int, bool) {
+	var out [3]int
+	v = normalize(v)
+	if v == "" {
+		return out, false
+	}
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	for i := 0; i < 3 && i < len(parts); i++ {
+		n, err := strconv.Atoi(parts[i])
+		if err != nil {
+			return [3]int{}, false
+		}
+		out[i] = n
+	}
+	return out, true
 }
 
 func latest(repo string) (*release, error) {

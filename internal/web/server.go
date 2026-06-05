@@ -12,22 +12,35 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"sync"
+	"time"
 
 	"github.com/lendable/minimalist-cost-tracker/internal/db"
 	"github.com/lendable/minimalist-cost-tracker/internal/pricing"
+	"github.com/lendable/minimalist-cost-tracker/internal/selfupdate"
 )
 
 //go:embed static
 var staticFS embed.FS
 
+// versionCheckInterval is how often the dashboard re-polls GitHub for the
+// latest release. Releases are infrequent, so a slow cadence is plenty and
+// keeps the API quiet.
+const versionCheckInterval = 6 * time.Hour
+
 type Server struct {
-	db     *db.DB
-	pricer *pricing.Pricer
-	port   int
+	db      *db.DB
+	pricer  *pricing.Pricer
+	port    int
+	version string // the running binary's version, surfaced via /api/version
+	repo    string // GitHub owner/name to check for newer releases ("" disables)
+
+	mu     sync.RWMutex
+	latest string // most recent release tag seen by the background checker
 }
 
-func New(database *db.DB, pricer *pricing.Pricer, port int) *Server {
-	return &Server{db: database, pricer: pricer, port: port}
+func New(database *db.DB, pricer *pricing.Pricer, port int, version, repo string) *Server {
+	return &Server{db: database, pricer: pricer, port: port, version: version, repo: repo}
 }
 
 // Handler builds the route table. Exposed separately from ListenAndServe so it
@@ -50,14 +63,42 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/skills", s.handleSkills)
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("GET /api/timeline", s.handleTimeline)
+	mux.HandleFunc("GET /api/version", s.handleVersion)
 
 	return mux
 }
 
 func (s *Server) ListenAndServe() error {
+	go s.watchVersion()
 	addr := ":" + strconv.Itoa(s.port)
 	log.Printf("cost-tracker dashboard: http://localhost%s", addr)
 	return http.ListenAndServe(addr, s.Handler())
+}
+
+// watchVersion polls GitHub for the latest release on a slow cadence and caches
+// it, so /api/version answers instantly without ever blocking on the network. A
+// failed check is logged and retried on the next tick; it never affects serving.
+func (s *Server) watchVersion() {
+	if s.repo == "" {
+		return
+	}
+	s.refreshLatest()
+	ticker := time.NewTicker(versionCheckInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.refreshLatest()
+	}
+}
+
+func (s *Server) refreshLatest() {
+	v, err := selfupdate.LatestVersion(s.repo)
+	if err != nil {
+		log.Printf("web: version check: %v", err)
+		return
+	}
+	s.mu.Lock()
+	s.latest = v
+	s.mu.Unlock()
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -181,6 +222,28 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, buckets)
+}
+
+// versionInfo is the /api/version payload the dashboard polls to decide whether
+// to show an "update available" banner.
+type versionInfo struct {
+	Current         string `json:"current"`
+	Latest          string `json:"latest"`
+	UpdateAvailable bool   `json:"update_available"`
+}
+
+// handleVersion reports the running version and, once the background checker has
+// populated it, the latest release and whether an update is available.
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	latest := s.latest
+	s.mu.RUnlock()
+
+	info := versionInfo{Current: s.version, Latest: latest}
+	if latest != "" {
+		info.UpdateAvailable = selfupdate.IsNewer(s.version, latest)
+	}
+	writeJSON(w, info)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
