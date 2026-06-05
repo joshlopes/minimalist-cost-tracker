@@ -6,8 +6,8 @@
       "package-name": "cost-tracker",
       "include-component-in-tag": false,
       "changelog-path": "CHANGELOG.md",
-      "draft": true,
-      "prerelease": false
+      "draft": false,
+      "prerelease": true
     }
   }
 }
