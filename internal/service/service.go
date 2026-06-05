@@ -50,6 +50,21 @@ func Uninstall() error {
 	}
 }
 
+// Restart stops the running service and starts it again so it picks up a
+// replaced binary while keeping its configured port. It reports whether an
+// installed service was found to restart; a missing service is not an error
+// (the caller falls back to asking the user to restart manually).
+func Restart() (bool, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		return restartLaunchd()
+	case "linux":
+		return restartSystemd()
+	default:
+		return false, nil
+	}
+}
+
 // Status returns a human-readable status line, or an error if no service is
 // installed.
 func Status() (string, error) {
@@ -140,6 +155,28 @@ func uninstallLaunchd() error {
 	return nil
 }
 
+// restartLaunchd bounces the LaunchAgent (bootout then bootstrap) so the new
+// binary at the same path takes over the same port. A not-installed agent
+// returns (false, nil).
+func restartLaunchd() (bool, error) {
+	path, err := launchdPlistPath()
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false, nil
+	}
+	target := fmt.Sprintf("gui/%d", os.Getuid())
+	_ = exec.Command("launchctl", "bootout", target+"/"+launchdLabel).Run()
+	if out, err := exec.Command("launchctl", "bootstrap", target, path).CombinedOutput(); err != nil {
+		// Fall back to the legacy load verb on older macOS.
+		if out2, err2 := exec.Command("launchctl", "load", "-w", path).CombinedOutput(); err2 != nil {
+			return true, fmt.Errorf("launchctl bootstrap failed: %s / %s", out, out2)
+		}
+	}
+	return true, nil
+}
+
 func statusLaunchd() (string, error) {
 	path, err := launchdPlistPath()
 	if err != nil {
@@ -216,6 +253,25 @@ func uninstallSystemd() error {
 		return err
 	}
 	return nil
+}
+
+// restartSystemd restarts the user unit so the new binary at the same path
+// takes over the same port. A not-installed unit returns (false, nil).
+func restartSystemd() (bool, error) {
+	path, err := systemdUnitPath()
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false, nil
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return true, fmt.Errorf("systemctl not found; restart %s manually", systemdUnit)
+	}
+	if out, err := exec.Command("systemctl", "--user", "restart", systemdUnit).CombinedOutput(); err != nil {
+		return true, fmt.Errorf("systemctl --user restart %s: %s", systemdUnit, out)
+	}
+	return true, nil
 }
 
 func statusSystemd() (string, error) {
