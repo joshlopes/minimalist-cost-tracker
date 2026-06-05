@@ -117,6 +117,14 @@ info "Wiring Claude Code hooks"
 "$BIN_PATH" install-hooks
 
 # --- 7. choose a free port ------------------------------------------------
+# A previous run's service is still holding its port. Stop it first so a
+# re-install reclaims the same preferred port instead of drifting to a new one
+# (which would leave the old dashboard running alongside the new one).
+if "$BIN_PATH" service status >/dev/null 2>&1; then
+  info "Stopping previous dashboard service"
+  "$BIN_PATH" service uninstall >/dev/null 2>&1 || true
+fi
+
 PORT="$("$BIN_PATH" free-port --start "$PREFERRED_PORT")"
 if [ "$PORT" != "$PREFERRED_PORT" ]; then
   warn "port $PREFERRED_PORT was busy; using $PORT instead"

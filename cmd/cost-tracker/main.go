@@ -279,7 +279,20 @@ func runUpdate(args []string) {
 		return
 	}
 	fmt.Printf("updated %s -> %s\n", version, newVersion)
-	fmt.Println("restart the dashboard (or its service) to run the new version.")
+
+	// Bounce the login service so the running dashboard stops and restarts on
+	// the new binary, keeping its existing port — otherwise the old version
+	// keeps holding it and a fresh start would land on a different port.
+	restarted, err := service.Restart()
+	switch {
+	case err != nil:
+		fmt.Printf("warning: could not restart the dashboard service: %v\n", err)
+		fmt.Println("restart the dashboard (or its service) to run the new version.")
+	case restarted:
+		fmt.Println("restarted the dashboard service on the new version.")
+	default:
+		fmt.Println("restart the dashboard to run the new version.")
+	}
 }
 
 // runFreePort prints the first free TCP port at or above --start, so the
