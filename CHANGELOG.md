@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/joshlopes/minimalist-cost-tracker/compare/v1.3.0...v1.4.0) (2026-06-05)
+
+
+### Features
+
+* **service:** auto-restart dashboard after update instead of prompting ([#12](https://github.com/joshlopes/minimalist-cost-tracker/issues/12)) ([5a83317](https://github.com/joshlopes/minimalist-cost-tracker/commit/5a8331778e5c129a6f487e1c95ed13bf8cb1efc3))
+
+
+### Bug Fixes
+
+* **release:** switch release-please from draft to prerelease ([#11](https://github.com/joshlopes/minimalist-cost-tracker/issues/11)) ([d00926f](https://github.com/joshlopes/minimalist-cost-tracker/commit/d00926f5599514336694e6e2ba3038d1bebfe7ad))
+
 ## [1.3.0](https://github.com/joshlopes/minimalist-cost-tracker/compare/v1.2.0...v1.3.0) (2026-06-04)
 
 
