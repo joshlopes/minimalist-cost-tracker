@@ -37,8 +37,10 @@ Usage:
   cost-tracker migrate              create/upgrade the database schema
   cost-tracker install-hooks [--all] wire the hooks into Claude Code settings.json
                                     (--all targets every profile: ~/.claude and ~/.claude-work)
-  cost-tracker service <cmd>        install|uninstall|status the login service
+  cost-tracker service <cmd>        manage the login service:
+                                    install|uninstall|start|stop|restart|status
   cost-tracker update [--repo R]    self-update to the latest GitHub release
+                                    (--check only reports if a newer one exists)
   cost-tracker version              print version
 `
 
@@ -167,7 +169,7 @@ func runServe(args []string) {
 		log.Fatalf("serve: migrate: %v", err)
 	}
 
-	srv := web.New(database, pricing.New(), *port)
+	srv := web.New(database, pricing.New(), *port, version, selfupdate.DefaultRepo)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
@@ -234,7 +236,7 @@ func installTargets(settingsPath string, all bool) ([]settings.Profile, error) {
 
 func runService(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: cost-tracker service <install|uninstall|status> [--port N]")
+		fmt.Fprintln(os.Stderr, "usage: cost-tracker service <install|uninstall|start|stop|restart|status> [--port N]")
 		os.Exit(2)
 	}
 	sub := args[0]
@@ -253,6 +255,36 @@ func runService(args []string) {
 			log.Fatalf("service uninstall: %v", err)
 		}
 		fmt.Println("service removed")
+	case "start":
+		started, err := service.Start()
+		if err != nil {
+			log.Fatalf("service start: %v", err)
+		}
+		if !started {
+			fmt.Fprintln(os.Stderr, "no dashboard service installed; install it with `cost-tracker service install`")
+			os.Exit(1)
+		}
+		fmt.Println("dashboard service started")
+	case "stop":
+		stopped, err := service.Stop()
+		if err != nil {
+			log.Fatalf("service stop: %v", err)
+		}
+		if !stopped {
+			fmt.Println("no dashboard service installed; nothing to stop")
+			return
+		}
+		fmt.Println("dashboard service stopped")
+	case "restart":
+		restarted, err := service.Restart()
+		if err != nil {
+			log.Fatalf("service restart: %v", err)
+		}
+		if !restarted {
+			fmt.Fprintln(os.Stderr, "no dashboard service installed; install it with `cost-tracker service install`")
+			os.Exit(1)
+		}
+		fmt.Println("dashboard service restarted")
 	case "status":
 		s, err := service.Status()
 		if err != nil {
@@ -268,7 +300,22 @@ func runService(args []string) {
 func runUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	repo := fs.String("repo", selfupdate.DefaultRepo, "GitHub owner/name to update from")
+	check := fs.Bool("check", false, "only report whether a newer release exists; do not update")
 	_ = fs.Parse(args)
+
+	if *check {
+		latest, err := selfupdate.LatestVersion(*repo)
+		if err != nil {
+			log.Fatalf("update: %v", err)
+		}
+		if selfupdate.IsNewer(version, latest) {
+			fmt.Printf("a newer version is available: %s (current %s)\n", latest, version)
+			fmt.Println("run `cost-tracker update` to upgrade.")
+		} else {
+			fmt.Printf("up to date (%s)\n", version)
+		}
+		return
+	}
 
 	newVersion, updated, err := selfupdate.Run(*repo, version, selfPath(), os.Stdout)
 	if err != nil {

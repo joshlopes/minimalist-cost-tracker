@@ -13,7 +13,8 @@
 #   REPO=owner/name          release source (default joshlopes/minimalist-cost-tracker)
 #   VERSION=v1.2.3           install a specific tag instead of latest
 #   COST_TRACKER_PORT=7842   preferred dashboard port (a free one is chosen if busy)
-#   COST_TRACKER_SERVICE=1   install a login service (default: 1, set 0 to skip)
+#   COST_TRACKER_SERVICE=1   run the dashboard server (1=yes, 0=no). If unset, the
+#                            installer asks; with no terminal it defaults to yes.
 #   BIN_DIR=$HOME/.local/bin install location
 #
 # POSIX sh; safe to re-run.
@@ -22,7 +23,9 @@ set -eu
 REPO="${REPO:-joshlopes/minimalist-cost-tracker}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 BIN_PATH="$BIN_DIR/cost-tracker"
-WANT_SERVICE="${COST_TRACKER_SERVICE:-1}"
+# WANT_SERVICE is left empty when COST_TRACKER_SERVICE is unset, so prompt_service
+# can ask interactively; an explicit env value always wins (unattended installs).
+WANT_SERVICE="${COST_TRACKER_SERVICE:-}"
 PREFERRED_PORT="${COST_TRACKER_PORT:-7842}"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
@@ -30,6 +33,30 @@ warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$1" >&2; }
 fail() { printf '\033[1;31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || fail "required tool not found: $1"; }
+
+# prompt_service decides whether to run the dashboard server. The dashboard is
+# optional: hooks record cost data regardless, and the dashboard can be started
+# any time with `cost-tracker serve`. An explicit COST_TRACKER_SERVICE wins; with
+# no env value we ask on the terminal (/dev/tty, since stdin is the piped
+# script); with no terminal at all we default to yes to preserve prior behaviour.
+prompt_service() {
+  case "${WANT_SERVICE:-}" in
+    "") ;;
+    0|1) return ;;
+    *) fail "COST_TRACKER_SERVICE must be 0 or 1" ;;
+  esac
+  if [ -r /dev/tty ]; then
+    printf '\033[1;34m==>\033[0m %s' \
+      "Run the cost dashboard as a background service that starts on login? [Y/n] " > /dev/tty
+    read -r reply < /dev/tty || reply=""
+    case "$reply" in
+      [Nn]*) WANT_SERVICE=0 ;;
+      *)     WANT_SERVICE=1 ;;
+    esac
+  else
+    WANT_SERVICE=1
+  fi
+}
 
 # --- 0. tools -------------------------------------------------------------
 if command -v curl >/dev/null 2>&1; then
@@ -116,47 +143,49 @@ info "Migrating database"
 info "Wiring Claude Code hooks"
 "$BIN_PATH" install-hooks
 
-# --- 7. choose a free port ------------------------------------------------
-# A previous run's service is still holding its port. Stop it first so a
-# re-install reclaims the same preferred port instead of drifting to a new one
-# (which would leave the old dashboard running alongside the new one).
-if "$BIN_PATH" service status >/dev/null 2>&1; then
-  info "Stopping previous dashboard service"
-  "$BIN_PATH" service uninstall >/dev/null 2>&1 || true
-fi
+# --- 7. dashboard server (optional) ---------------------------------------
+# Ask whether to run the dashboard server. Declining leaves the hooks recording
+# data; the dashboard can be started any time with `cost-tracker serve`.
+prompt_service
 
 PORT="$("$BIN_PATH" free-port --start "$PREFERRED_PORT")"
-if [ "$PORT" != "$PREFERRED_PORT" ]; then
-  warn "port $PREFERRED_PORT was busy; using $PORT instead"
-fi
-
-# --- 8. start the dashboard -----------------------------------------------
+URL="http://localhost:$PORT"
 RUNNING=0
+
 if [ "$WANT_SERVICE" = "1" ]; then
+  # A previous run's service is still holding its port. Stop it first so a
+  # re-install reclaims the same preferred port instead of drifting to a new one
+  # (which would leave the old dashboard running alongside the new one).
+  if "$BIN_PATH" service status >/dev/null 2>&1; then
+    info "Stopping previous dashboard service"
+    "$BIN_PATH" service uninstall >/dev/null 2>&1 || true
+    PORT="$("$BIN_PATH" free-port --start "$PREFERRED_PORT")"
+    URL="http://localhost:$PORT"
+  fi
+  if [ "$PORT" != "$PREFERRED_PORT" ]; then
+    warn "port $PREFERRED_PORT was busy; using $PORT instead"
+  fi
+
+  # --- 8. start the dashboard ---------------------------------------------
   if "$BIN_PATH" service install --port "$PORT" >/dev/null 2>&1; then
     info "Installed login service (auto-starts on boot)"
     RUNNING=1
   else
     warn "could not install a login service; starting in the background instead"
+    nohup "$BIN_PATH" serve --port "$PORT" >/dev/null 2>&1 &
+    RUNNING=1
   fi
-fi
 
-if [ "$RUNNING" != "1" ]; then
-  # No service (or it failed): start a detached background dashboard.
-  nohup "$BIN_PATH" serve --port "$PORT" >/dev/null 2>&1 &
-  RUNNING=1
+  # Give it a moment to bind, then confirm it answers.
+  i=0
+  while [ "$i" -lt 20 ]; do
+    if $DL "$URL/api/stats" >/dev/null 2>&1; then
+      break
+    fi
+    i=$((i + 1))
+    sleep 0.25
+  done
 fi
-
-# Give it a moment to bind, then confirm it answers.
-URL="http://localhost:$PORT"
-i=0
-while [ "$i" -lt 20 ]; do
-  if $DL "$URL/api/stats" >/dev/null 2>&1; then
-    break
-  fi
-  i=$((i + 1))
-  sleep 0.25
-done
 
 # --- 9. PATH note + final message -----------------------------------------
 case ":$PATH:" in
@@ -165,6 +194,11 @@ case ":$PATH:" in
 esac
 
 echo
-info "Hooks successfully installed. Your dashboard is running now on $URL"
+if [ "$RUNNING" = "1" ]; then
+  info "Hooks successfully installed. Your dashboard is running now on $URL"
+else
+  info "Hooks successfully installed. The dashboard server was not started."
+  echo "  Start it any time with:  cost-tracker serve   (then open $URL)"
+fi
 echo "  (Hooks take effect on your next Claude Code session.)"
 echo "  Update later with:  cost-tracker update"

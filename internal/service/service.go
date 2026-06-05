@@ -65,6 +65,34 @@ func Restart() (bool, error) {
 	}
 }
 
+// Stop stops the running dashboard service without removing its definition, so
+// it can be started again with `service start`/`restart` (and still auto-starts
+// on next login). It reports whether an installed service was found; a missing
+// service is not an error.
+func Stop() (bool, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		return stopLaunchd()
+	case "linux":
+		return stopSystemd()
+	default:
+		return false, nil
+	}
+}
+
+// Start starts an installed-but-stopped service. It reports whether an installed
+// service was found; a missing service is not an error (install it first).
+func Start() (bool, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		return startLaunchd()
+	case "linux":
+		return startSystemd()
+	default:
+		return false, nil
+	}
+}
+
 // Status returns a human-readable status line, or an error if no service is
 // installed.
 func Status() (string, error) {
@@ -177,6 +205,43 @@ func restartLaunchd() (bool, error) {
 	return true, nil
 }
 
+// stopLaunchd boots out the running agent but leaves the plist in place. A
+// not-installed agent returns (false, nil).
+func stopLaunchd() (bool, error) {
+	path, err := launchdPlistPath()
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false, nil
+	}
+	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), launchdLabel)
+	if out, err := exec.Command("launchctl", "bootout", target).CombinedOutput(); err != nil {
+		return true, fmt.Errorf("launchctl bootout %s: %s", target, out)
+	}
+	return true, nil
+}
+
+// startLaunchd bootstraps the agent from its existing plist. A not-installed
+// agent returns (false, nil).
+func startLaunchd() (bool, error) {
+	path, err := launchdPlistPath()
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false, nil
+	}
+	target := fmt.Sprintf("gui/%d", os.Getuid())
+	if out, err := exec.Command("launchctl", "bootstrap", target, path).CombinedOutput(); err != nil {
+		// Fall back to the legacy load verb on older macOS.
+		if out2, err2 := exec.Command("launchctl", "load", "-w", path).CombinedOutput(); err2 != nil {
+			return true, fmt.Errorf("launchctl bootstrap failed: %s / %s", out, out2)
+		}
+	}
+	return true, nil
+}
+
 func statusLaunchd() (string, error) {
 	path, err := launchdPlistPath()
 	if err != nil {
@@ -270,6 +335,44 @@ func restartSystemd() (bool, error) {
 	}
 	if out, err := exec.Command("systemctl", "--user", "restart", systemdUnit).CombinedOutput(); err != nil {
 		return true, fmt.Errorf("systemctl --user restart %s: %s", systemdUnit, out)
+	}
+	return true, nil
+}
+
+// stopSystemd stops the running user unit but leaves it enabled, so it restarts
+// on next login. A not-installed unit returns (false, nil).
+func stopSystemd() (bool, error) {
+	path, err := systemdUnitPath()
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false, nil
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return true, fmt.Errorf("systemctl not found; stop %s manually", systemdUnit)
+	}
+	if out, err := exec.Command("systemctl", "--user", "stop", systemdUnit).CombinedOutput(); err != nil {
+		return true, fmt.Errorf("systemctl --user stop %s: %s", systemdUnit, out)
+	}
+	return true, nil
+}
+
+// startSystemd starts an installed-but-stopped user unit. A not-installed unit
+// returns (false, nil).
+func startSystemd() (bool, error) {
+	path, err := systemdUnitPath()
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false, nil
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return true, fmt.Errorf("systemctl not found; start %s manually", systemdUnit)
+	}
+	if out, err := exec.Command("systemctl", "--user", "start", systemdUnit).CombinedOutput(); err != nil {
+		return true, fmt.Errorf("systemctl --user start %s: %s", systemdUnit, out)
 	}
 	return true, nil
 }

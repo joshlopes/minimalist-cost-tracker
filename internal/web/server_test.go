@@ -52,7 +52,7 @@ func setup(t *testing.T) http.Handler {
 		t.Fatal(err)
 	}
 
-	return New(d, pricer, 0).Handler()
+	return New(d, pricer, 0, "v0.0.0-test", "").Handler()
 }
 
 func get(t *testing.T, h http.Handler, path string, out any) *http.Response {
@@ -128,5 +128,37 @@ func TestIndexAndNotFound(t *testing.T) {
 	}
 	if res := get(t, h, "/api/sessions/does-not-exist", nil); res.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown session status = %d, want 404", res.StatusCode)
+	}
+}
+
+func TestVersionEndpoint(t *testing.T) {
+	pricer := pricing.New()
+	// repo "" disables the background poller; we set the cached latest directly.
+	s := New(nil, pricer, 0, "v1.2.0", "")
+	h := s.Handler()
+
+	// Before any check has run, latest is empty and no update is claimed.
+	var v versionInfo
+	get(t, h, "/api/version", &v)
+	if v.Current != "v1.2.0" || v.Latest != "" || v.UpdateAvailable {
+		t.Errorf("pre-check version = %+v, want current only", v)
+	}
+
+	// Once a newer release is cached, the endpoint reports it.
+	s.mu.Lock()
+	s.latest = "v1.3.0"
+	s.mu.Unlock()
+	get(t, h, "/api/version", &v)
+	if !v.UpdateAvailable || v.Latest != "v1.3.0" {
+		t.Errorf("post-check version = %+v, want update to v1.3.0", v)
+	}
+
+	// A latest that is not newer must not claim an update.
+	s.mu.Lock()
+	s.latest = "v1.2.0"
+	s.mu.Unlock()
+	get(t, h, "/api/version", &v)
+	if v.UpdateAvailable {
+		t.Errorf("equal version reported update: %+v", v)
 	}
 }
