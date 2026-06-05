@@ -216,7 +216,9 @@ func stopLaunchd() (bool, error) {
 		return false, nil
 	}
 	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), launchdLabel)
-	_ = exec.Command("launchctl", "bootout", target).Run()
+	if out, err := exec.Command("launchctl", "bootout", target).CombinedOutput(); err != nil {
+		return true, fmt.Errorf("launchctl bootout %s: %s", target, out)
+	}
 	return true, nil
 }
 

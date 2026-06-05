@@ -65,8 +65,8 @@ cost-tracker update --check # only report whether a newer release exists
 ```
 
 `update` checks the latest release, downloads the matching binary, verifies its
-checksum, and atomically replaces itself in place. Restart the dashboard (or run
-`cost-tracker service install` again) to run the new version. Homebrew users
+checksum, and atomically replaces itself in place. If needed, restart the dashboard
+(or run `cost-tracker service restart`) to run the new version. Homebrew users
 update with `brew upgrade cost-tracker` instead.
 
 The running dashboard also checks GitHub for newer releases in the background

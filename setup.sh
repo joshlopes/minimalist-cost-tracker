@@ -27,7 +27,11 @@ fail() { printf '\033[1;31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 # any time with `cost-tracker serve`. An explicit COST_TRACKER_SERVICE wins; with
 # no env value we ask on the terminal; with no terminal we default to yes.
 prompt_service() {
-  [ -n "$WANT_SERVICE" ] && return
+  case "${WANT_SERVICE:-}" in
+    "") ;;
+    0|1) return ;;
+    *) fail "COST_TRACKER_SERVICE must be 0 or 1" ;;
+  esac
   if [ -r /dev/tty ]; then
     printf '\033[1;34m==>\033[0m %s' \
       "Run the cost dashboard as a background service that starts on login? [Y/n] " > /dev/tty
@@ -69,11 +73,15 @@ info "Wiring Claude Code hooks"
 # data; the dashboard can be started any time with `cost-tracker serve`.
 prompt_service
 
-PORT="$("$BIN_PATH" free-port --start "$PREFERRED_PORT")"
-[ "$PORT" = "$PREFERRED_PORT" ] || warn "port $PREFERRED_PORT busy; using $PORT"
-
+PORT="$PREFERRED_PORT"
 SERVING=0
 if [ "$WANT_SERVICE" = "1" ]; then
+  if "$BIN_PATH" service status >/dev/null 2>&1; then
+    info "Stopping previous dashboard service"
+    "$BIN_PATH" service uninstall >/dev/null 2>&1 || true
+  fi
+  PORT="$("$BIN_PATH" free-port --start "$PREFERRED_PORT")"
+  [ "$PORT" = "$PREFERRED_PORT" ] || warn "port $PREFERRED_PORT busy; using $PORT"
   if "$BIN_PATH" service install --port "$PORT" >/dev/null 2>&1; then
     info "Installed login service"
     SERVING=1

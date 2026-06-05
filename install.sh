@@ -40,7 +40,11 @@ need() { command -v "$1" >/dev/null 2>&1 || fail "required tool not found: $1"; 
 # no env value we ask on the terminal (/dev/tty, since stdin is the piped
 # script); with no terminal at all we default to yes to preserve prior behaviour.
 prompt_service() {
-  [ -n "$WANT_SERVICE" ] && return
+  case "${WANT_SERVICE:-}" in
+    "") ;;
+    0|1) return ;;
+    *) fail "COST_TRACKER_SERVICE must be 0 or 1" ;;
+  esac
   if [ -r /dev/tty ]; then
     printf '\033[1;34m==>\033[0m %s' \
       "Run the cost dashboard as a background service that starts on login? [Y/n] " > /dev/tty

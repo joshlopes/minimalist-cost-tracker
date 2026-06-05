@@ -275,9 +275,20 @@ async function checkVersion() {
     const v = await getJSON("/api/version");
     if (!v || !v.update_available) return;
     const banner = document.getElementById("update-banner");
-    banner.innerHTML =
-      `<span>✨</span><span>A newer version (<strong>${v.latest}</strong>) is available — ` +
-      `you're on ${v.current}. Update with <code>cost-tracker update</code>.</span>`;
+    banner.replaceChildren();
+    const icon = document.createElement("span");
+    icon.textContent = "✨";
+    const msg = document.createElement("span");
+    msg.append("A newer version (");
+    const latest = document.createElement("strong");
+    latest.textContent = String(v.latest || "");
+    msg.appendChild(latest);
+    msg.append(") is available — you're on " + String(v.current || "") + ". Update with ");
+    const cmd = document.createElement("code");
+    cmd.textContent = "cost-tracker update";
+    msg.appendChild(cmd);
+    msg.append(".");
+    banner.append(icon, msg);
     banner.hidden = false;
   } catch (err) {
     console.error("version check failed:", err);
@@ -306,7 +317,8 @@ async function loadAll() {
 }
 
 async function boot() {
-  checkVersion();
+  await checkVersion();
+  setInterval(checkVersion, 5 * 60 * 1000);
   await initProfiles();
   await loadAll();
 }

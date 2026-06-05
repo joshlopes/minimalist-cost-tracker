@@ -261,8 +261,8 @@ func runService(args []string) {
 			log.Fatalf("service start: %v", err)
 		}
 		if !started {
-			fmt.Println("no dashboard service installed; install it with `cost-tracker service install`")
-			return
+			fmt.Fprintln(os.Stderr, "no dashboard service installed; install it with `cost-tracker service install`")
+			os.Exit(1)
 		}
 		fmt.Println("dashboard service started")
 	case "stop":
@@ -281,8 +281,8 @@ func runService(args []string) {
 			log.Fatalf("service restart: %v", err)
 		}
 		if !restarted {
-			fmt.Println("no dashboard service installed; install it with `cost-tracker service install`")
-			return
+			fmt.Fprintln(os.Stderr, "no dashboard service installed; install it with `cost-tracker service install`")
+			os.Exit(1)
 		}
 		fmt.Println("dashboard service restarted")
 	case "status":
