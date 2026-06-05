@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/joshlopes/minimalist-cost-tracker/compare/v1.4.0...v1.5.0) (2026-06-05)
+
+
+### Features
+
+* **service:** make dashboard server optional, add start/stop/restart subcommands, and update-available banner ([#13](https://github.com/joshlopes/minimalist-cost-tracker/issues/13)) ([1d0435b](https://github.com/joshlopes/minimalist-cost-tracker/commit/1d0435ba56e97afe38cc98960e396e0efb31f577))
+
 ## [1.4.0](https://github.com/joshlopes/minimalist-cost-tracker/compare/v1.3.0...v1.4.0) (2026-06-05)
 
 
